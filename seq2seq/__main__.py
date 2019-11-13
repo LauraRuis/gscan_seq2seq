@@ -1,7 +1,12 @@
 from seq2seq.gSCAN_dataset import GroundedScanDataset
 
 import argparse
-import os
+import logging
+
+FORMAT = '%(asctime)-15s %(message)s'
+logging.basicConfig(format=FORMAT, level=logging.DEBUG,
+                    datefmt='%Y-%m-%d %H:%M')
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -26,15 +31,15 @@ def main():
     training_set = GroundedScanDataset(flags["data_path"], flags["data_directory"], split="train",
                                        input_vocabulary_file=flags['input_vocab_path'],
                                        target_vocabulary_file=flags['target_vocab_path'])
-    print("Input vocabulary size training set: {}".format(training_set.input_vocabulary_size))
-    print("Output vocabulary size training set: {}".format(training_set.target_vocabulary_size))
+    logger.info("Input vocabulary size training set: {}".format(training_set.input_vocabulary_size))
+    logger.info("Output vocabulary size training set: {}".format(training_set.target_vocabulary_size))
     if flags['save_vocabularies']:
         training_set.save_vocabularies(flags["input_vocab_path"], flags["target_vocab_path"])
     test_set = GroundedScanDataset(flags["data_path"], flags["data_directory"], split="test",
                                    input_vocabulary_file=flags["input_vocab_path"],
                                    target_vocabulary_file=flags["target_vocab_path"])
-    print("Input vocabulary size test set: {}".format(test_set.input_vocabulary_size))
-    print("Output vocabulary size test set: {}".format(test_set.target_vocabulary_size))
+    logger.info("Input vocabulary size test set: {}".format(test_set.input_vocabulary_size))
+    logger.info("Output vocabulary size test set: {}".format(test_set.target_vocabulary_size))
 
 
 if __name__ == "__main__":

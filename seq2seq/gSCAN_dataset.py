@@ -6,6 +6,7 @@ import json
 
 from GroundedScan.dataset import GroundedScan
 
+logger = logging.getLogger(__name__)
 
 class Vocabulary(object):
 
@@ -67,12 +68,12 @@ class GroundedScanDataset(object):
             self.target_vocabulary = Vocabulary()
             self.read_vocabularies()
         else:
-            print("Loading vocabularies...")
+            logger.info("Loading vocabularies...")
             self.input_vocabulary = Vocabulary.load(input_vocabulary_file)
             self.target_vocabulary = Vocabulary.load(target_vocabulary_file)
 
     def read_vocabularies(self):
-        print("Populating vocabulary...")
+        logger.info("Populating vocabulary...")
         for i, example in enumerate(self.dataset.get_examples_with_image(self.split)):
             self.input_vocabulary.add_sentence(example["input_command"])
             self.target_vocabulary.add_sentence(example["target_command"])

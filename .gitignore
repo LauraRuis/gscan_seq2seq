@@ -18,6 +18,7 @@ data/
 .Python
 env/
 build/
+gscan_seq2seq/
 develop-eggs/
 dist/
 downloads/

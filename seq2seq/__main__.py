@@ -31,10 +31,14 @@ def main():
 
     # Encoder arguments
     parser.add_argument('--embedding_dim', type=int, default=50)
-    parser.add_argument('--num_encoder_layers', type=int, default=1)
+    parser.add_argument('--num_encoder_layers', type=int, default=2)
     parser.add_argument('--encoder_dropout_p', type=float, default=0.1)
     parser.add_argument("--encoder_bidirectional", dest="encoder_bidirectional", default=True, action="store_true")
     parser.add_argument("--encoder_unidirectional", dest="encoder_bidirectional", default=False, action="store_false")
+
+    # Decoder arguments
+    parser.add_argument('--num_decoder_layers', type=int, default=2)
+    parser.add_argument('--decoder_dropout_p', type=float, default=0.1)
 
     # Other arguments
     parser.add_argument('--seed', type=int, default=42)

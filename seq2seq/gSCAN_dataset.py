@@ -132,22 +132,34 @@ class GroundedScanDataset(object):
 
     def get_data_batch(self, batch_size=10):
         # TODO: think more about this and efficiency
-        batch = []
-        lengths = []
-        max_length = 0
+        input_batch = []
+        target_batch = []
+        input_lengths = []
+        target_lengths = []
+        max_input_length = 0
+        max_target_length = 0
         for example in self.dataset.get_examples_with_image(self.split):
             input_commands = example["input_command"]
-            if len(batch) == batch_size:
+            target_commands = example["target_command"]
+            if len(input_batch) == batch_size:
                 break
-            batch.append(self.sentence_to_array(input_commands, vocabulary="input"))
-            lengths.append(len(input_commands))
-            if len(input_commands) > max_length:
-                max_length = len(input_commands)
+            input_batch.append(self.sentence_to_array(input_commands, vocabulary="input"))
+            target_batch.append(self.sentence_to_array(target_commands, vocabulary="target"))
+            input_lengths.append(len(input_commands))
+            target_lengths.append(len(target_commands))
+            if len(input_commands) > max_input_length:
+                max_input_length = len(input_commands)
+            if len(target_commands) > max_target_length:
+                max_target_length = len(target_commands)
+
         # Pad the batch with zero's
-        for example in batch:
-            num_to_pad = max_length - len(example)
-            example.extend([self.input_vocabulary.pad_idx] * num_to_pad)
-        return torch.tensor(batch, dtype=torch.long, device=device), lengths
+        for input_example, target_example in zip(input_batch, target_batch):
+            num_to_pad_input = max_input_length - len(input_example)
+            input_example.extend([self.input_vocabulary.pad_idx] * num_to_pad_input)
+            num_to_pad_target = max_target_length - len(target_example)
+            target_example.extend([self.target_vocabulary.pad_idx] * num_to_pad_target)
+        return (torch.tensor(input_batch, dtype=torch.long, device=device), input_lengths,
+                torch.tensor(target_batch, dtype=torch.long, device=device), target_lengths)
 
     def sentence_to_array(self, sentence: List[str], vocabulary: str):
         vocab = self.get_vocabulary(vocabulary)

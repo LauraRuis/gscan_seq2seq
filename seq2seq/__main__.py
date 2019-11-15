@@ -1,4 +1,9 @@
-from seq2seq.gSCAN_dataset import GroundedScanDataset
+# TODO: implement CNN
+# TODO: implement model wrapper
+# TODO: write training loop
+# TODO: write prediction loop
+# TODO: write evaluation
+# TODO: change 'walk east' and stuff in dataset to 'turn left walk' etc.
 
 import argparse
 import logging
@@ -29,9 +34,18 @@ def main():
     # Training arguments
     parser.add_argument('--training_batch_size', type=int, default=10)
 
-    # Encoder arguments
-    parser.add_argument('--embedding_dim', type=int, default=50)
+    # Situation Encoder arguments
+    parser.add_argument('--cnn_hidden_num_channels', type=int, default=50)
+    parser.add_argument('--cnn_kernel_size', type=int, default=5)
+    parser.add_argument('--cnn_hidden_size', type=int, default=1024)
+    parser.add_argument('--cnn_dropout_p', type=float, default=0.1)
+    parser.add_argument('--max_pool_kernel_size', type=int, default=3)
+    parser.add_argument('--max_pool_stride', type=int, default=3)
+
+    # Command Encoder arguments
+    parser.add_argument('--embedding_dimension', type=int, default=50)
     parser.add_argument('--num_encoder_layers', type=int, default=2)
+    parser.add_argument('--encoder_hidden_size', type=int, default=50)
     parser.add_argument('--encoder_dropout_p', type=float, default=0.1)
     parser.add_argument("--encoder_bidirectional", dest="encoder_bidirectional", default=True, action="store_true")
     parser.add_argument("--encoder_unidirectional", dest="encoder_bidirectional", default=False, action="store_false")

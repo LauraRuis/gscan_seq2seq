@@ -133,6 +133,7 @@ class GroundedScanDataset(object):
     def get_data_batch(self, batch_size=10):
         # TODO: think more about this and efficiency
         input_batch = []
+        situation_batch = []
         target_batch = []
         input_lengths = []
         target_lengths = []
@@ -141,12 +142,14 @@ class GroundedScanDataset(object):
         for example in self.dataset.get_examples_with_image(self.split):
             input_commands = example["input_command"]
             target_commands = example["target_command"]
+            situation_image = example["situation_image"]
             if len(input_batch) == batch_size:
                 break
             input_batch.append(self.sentence_to_array(input_commands, vocabulary="input"))
             target_batch.append(self.sentence_to_array(target_commands, vocabulary="target"))
             input_lengths.append(len(input_commands))
             target_lengths.append(len(target_commands))
+            situation_batch.append(situation_image)
             if len(input_commands) > max_input_length:
                 max_input_length = len(input_commands)
             if len(target_commands) > max_target_length:
@@ -159,9 +162,11 @@ class GroundedScanDataset(object):
             num_to_pad_target = max_target_length - len(target_example)
             target_example.extend([self.target_vocabulary.pad_idx] * num_to_pad_target)
         return (torch.tensor(input_batch, dtype=torch.long, device=device), input_lengths,
-                torch.tensor(target_batch, dtype=torch.long, device=device), target_lengths)
+                torch.tensor(target_batch, dtype=torch.long, device=device), target_lengths,
+                torch.tensor(situation_batch, dtype=torch.float, device=device))
 
     def sentence_to_array(self, sentence: List[str], vocabulary: str):
+        # TODO: add <SOS>, <EOS>
         vocab = self.get_vocabulary(vocabulary)
         return [vocab.word_to_idx(word) for word in sentence]
 

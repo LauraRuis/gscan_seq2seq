@@ -16,43 +16,15 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger = logging.getLogger(__name__)
 
 
-def describe_model(net):
-    if type(net) is AttentionDecoderRNN:
-        logger.info('AttnDecoderRNN specs:')
-        logger.info(' nlayers=' + str(net.num_layers))
-        logger.info(' hidden_size=' + str(net.hidden_size))
-        logger.info(' dropout=' + str(net.dropout_p))
-        logger.info(' n_output_symbols=' + str(net.output_size))
-        logger.info('')
-    elif type(net) is EncoderRNN:
-        logger.info('EncoderRNN specs:')
-        logger.info(' bidirectional=' + str(net.bi))
-        logger.info(' nlayers=' + str(net.num_layers))
-        logger.info(' hidden_size=' + str(net.embedding_dim))
-        logger.info(' dropout=' + str(net.dropout_p))
-        logger.info(' n_input_symbols=' + str(net.input_size))
-        logger.info('')
-    elif type(net) is DecoderRNN:
-        logger.info('DecoderRNN specs:')
-        logger.info(' nlayers=' + str(net.num_layers))
-        logger.info(' hidden_size=' + str(net.hidden_size))
-        logger.info(' dropout=' + str(net.dropout_p))
-        logger.info(' n_output_symbols=' + str(net.output_size))
-        logger.info("")
-    else:
-        logger.info('Network type not found...')
-
-
 class EncoderRNN(nn.Module):
     """
     Embed a sequence of symbols using an LSTM.
 
     The RNN hidden vector (not cell vector) at each step is captured,
       for transfer to an attention-based decoder
-    # TODO: hidden size = embedding dim in nn.LSTM?
     """
-    def __init__(self, input_size: int, embedding_dim: int, num_layers: int, dropout_probability: float,
-                 bidirectional: bool):
+    def __init__(self, input_size: int, embedding_dim: int, hidden_size: int, num_layers: int,
+                 dropout_probability: float, bidirectional: bool, padding_idx: int):
         """
         :param input_size: number of input symbols
         :param embedding_dim: number of hidden units in RNN encoder, and size of all embeddings
@@ -61,15 +33,15 @@ class EncoderRNN(nn.Module):
         :param bidirectional: use a bidirectional LSTM instead and sum of the resulting embeddings
         """
         super(EncoderRNN, self).__init__()
-        # TODO: separate hidden dim instead of embedding dim
         self.num_layers = num_layers
+        self.hidden_size = hidden_size
         self.input_size = input_size
         self.embedding_dim = embedding_dim
         self.dropout_probability = dropout_probability
         self.bidirectional = bidirectional
-        self.embedding = nn.Embedding(input_size, embedding_dim, padding_idx=0)  # TODO: change
+        self.embedding = nn.Embedding(input_size, embedding_dim, padding_idx=padding_idx)
         self.dropout = nn.Dropout(dropout_probability)
-        self.lstm = nn.LSTM(input_size=embedding_dim, hidden_size=embedding_dim, num_layers=num_layers,
+        self.lstm = nn.LSTM(input_size=embedding_dim, hidden_size=hidden_size, num_layers=num_layers,
                             dropout=dropout_probability, bidirectional=bidirectional)
 
     def forward(self, input_batch: torch.LongTensor, input_lengths: List[int]) -> Tuple[torch.Tensor, dict]:
@@ -117,6 +89,11 @@ class EncoderRNN(nn.Module):
         input_lengths = input_lengths[unperm_idx].tolist()
 
         return hidden, {"encoder_outputs": output_per_timestep, "sequence_lengths": input_lengths}
+
+    def extra_repr(self) -> str:
+        return "EncoderRNN\n bidirectional={} \n num_layers={}\n hidden_size={}\n dropout={}\n "\
+               "n_input_symbols={}\n".format(self.bidirectional, self.num_lauers, self.hidden_size,
+                                             self.dropout_probability, self.input_size)
 
 
 class Attention(nn.Module):
@@ -312,6 +289,11 @@ class AttentionDecoderRNN(nn.Module):
                                                  -1).contiguous()  # [num_layers, batch_size, hidden_size]
         return encoder_message.clone(), encoder_message.clone()
 
+    def extra_repr(self) -> str:
+        return "AttentionDecoderRNN\n num_layers={}\n hidden_size={}\n dropout={}\n num_output_symbols={}\n".format(
+            self.num_layers, self.hidden_size, self.dropout_probability, self.output_size
+        )
+
 
 class DecoderRNN(nn.Module):
     """One-step simple batch RNN decoder"""
@@ -368,3 +350,8 @@ class DecoderRNN(nn.Module):
         encoder_message = encoder_message.expand(self.num_layers, -1,
                                                  -1).contiguous()  # nlayers, batch_size, hidden_size tensor
         return encoder_message.clone(), encoder_message.clone()
+
+    def extra_repr(self) -> str:
+        return "DecoderRNN\n num_layers={}\n hidden_size={}\n dropout={}\n num_output_symbols={}\n".format(
+            self.num_layers, self.hidden_size, self.dropout_probability, self.output_size
+        )

@@ -2,9 +2,7 @@
 import logging
 import torch
 
-from seq2seq.seq2seq_model import EncoderRNN
-from seq2seq.seq2seq_model import DecoderRNN
-from seq2seq.seq2seq_model import AttentionDecoderRNN
+from seq2seq.model import Model
 from seq2seq.gSCAN_dataset import GroundedScanDataset
 
 logger = logging.getLogger(__name__)
@@ -12,9 +10,10 @@ use_cuda = True if torch.cuda.is_available() else False
 
 
 def train(data_path: str, data_directory: str, generate_vocabularies: bool, input_vocab_path: str,
-          target_vocab_path: str, embedding_dim: int, num_encoder_layers: int, encoder_dropout_p: float,
+          target_vocab_path: str, embedding_dimension: int, num_encoder_layers: int, encoder_dropout_p: float,
           encoder_bidirectional: bool, training_batch_size: int, num_decoder_layers: int, decoder_dropout_p: float,
-          seed=42, **kwargs):
+          cnn_kernel_size: int, cnn_dropout_p: float, cnn_hidden_num_channels: int, max_pool_kernel_size: int,
+          encoder_hidden_size: int, max_pool_stride: int, cnn_hidden_size: int, seed=42, **kwargs):
     device = torch.device(type='cuda') if use_cuda else torch.device(type='cpu')
     cfg = locals().copy()
 
@@ -37,31 +36,14 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
     if generate_vocabularies:
         training_set.save_vocabularies(input_vocab_path, target_vocab_path)
 
-    # TESTING
-    encoder = EncoderRNN(input_size=training_set.input_vocabulary_size, embedding_dim=embedding_dim,
-                         num_layers=num_encoder_layers, dropout_probability=encoder_dropout_p,
-                         bidirectional=encoder_bidirectional)
-    attention_decoder = AttentionDecoderRNN(hidden_size=embedding_dim, output_size=training_set.target_vocabulary_size,
-                                            num_layers=num_decoder_layers, dropout_probability=decoder_dropout_p)
-
-    input_batch, input_lengths, target_batch, target_lengths = training_set.get_data_batch(
+    input_batch, input_lengths, target_batch, target_lengths, situation_batch = training_set.get_data_batch(
         batch_size=training_batch_size)
+    image_dimensions, _, num_channels = situation_batch[0].shape
 
-    hidden, encoder_outputs = encoder(input_batch, input_lengths)
-    max_time = max(target_lengths)
-    initial_hidden = attention_decoder.initialize_hidden(hidden)
-    # TODO: check that hidden and cell aren't the same now (because of mutable type)
-    decoder_outputs = []
-    hidden = initial_hidden[0].clone(), initial_hidden[1].clone()
-    for t in range(max_time):
-        input_tokens = target_batch[:, t]
-        output, hidden, attention_weights = attention_decoder.forward_step(input_tokens, hidden,
-                                                                           encoder_outputs["encoder_outputs"].clone(),
-                                                                           encoder_outputs["sequence_lengths"])
-        decoder_outputs.append(output.unsqueeze(0))
-    decoder_output = torch.cat(decoder_outputs, dim=0)  # [max_target_length, batch_size, output_vocabulary_size]
-    # initial_hidden = initial_hidden[0].clone(), initial_hidden[1].clone()
-    # decoder_output_batched = attention_decoder(target_batch, target_lengths, initial_hidden,
-    #                                            encoder_outputs["encoder_outputs"].clone(),
-    #                                            encoder_outputs["sequence_lengths"])
+    model = Model(image_dimensions=image_dimensions, input_vocabulary_size=training_set.input_vocabulary_size,
+                  target_vocabulary_size=training_set.target_vocabulary_size, num_cnn_channels=num_channels,
+                  input_padding_idx=training_set.input_vocabulary.pad_idx, **cfg)
+
+    test = model(input_batch, input_lengths, situation_batch, target_batch, target_lengths)
+
     print()

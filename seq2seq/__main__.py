@@ -1,19 +1,22 @@
-# TODO: implement CNN
-# TODO: implement model wrapper
-# TODO: write training loop
-# TODO: write prediction loop
 # TODO: write evaluation
-# TODO: change 'walk east' and stuff in dataset to 'turn left walk' etc.
+# TODO: already make sequence masks in gSCAN_dataset.py
+# TODO: add option to visualize predictions from json file in GroundedScanDataset
 
 import argparse
 import logging
+import os
+import torch
 
+from seq2seq.gSCAN_dataset import GroundedScanDataset
+from seq2seq.model import Model
 from seq2seq.train import train
+from seq2seq.predict import predict_and_save
 
 FORMAT = "%(asctime)-15s %(message)s"
 logging.basicConfig(format=FORMAT, level=logging.DEBUG,
                     datefmt="%Y-%m-%d %H:%M")
 logger = logging.getLogger(__name__)
+use_cuda = True if torch.cuda.is_available() else False
 
 
 def main():
@@ -22,8 +25,9 @@ def main():
 
     # Data arguments
     parser.add_argument("--mode", type=str, default="train", help="train, test or predict")
+    parser.add_argument("--split", type=str, default="test", help="Which split to get from Grounded Scan.")
     parser.add_argument("--data_directory", type=str, default="data", help="Path to folder with data.")
-    parser.add_argument("--data_path", type=str, default="data/dataset.txt", help="Path to file with data.")
+    parser.add_argument("--data_path", type=str, default="data/new_dataset.txt", help="Path to file with data.")
     parser.add_argument("--input_vocab_path", type=str, default="data/training_input_vocab.txt",
                         help="Path to file with input vocabulary as saved by Vocabulary class in gSCAN_dataset.py")
     parser.add_argument("--target_vocab_path", type=str, default="data/training_target_vocab.txt",
@@ -31,33 +35,51 @@ def main():
     parser.add_argument("--generate_vocabularies", dest="generate_vocabularies", default=False, action="store_true")
     parser.add_argument("--load_vocabularies", dest="generate_vocabularies", default=True, action="store_false")
 
-    # Training arguments
-    parser.add_argument('--training_batch_size', type=int, default=10)
+    # Training and learning arguments
+    parser.add_argument("--training_batch_size", type=int, default=10)
+    parser.add_argument("--test_batch_size", type=int, default=10)
+    parser.add_argument("--max_training_examples", type=int, default=None)
+    parser.add_argument("--learning_rate", type=float, default=0.001)
+    parser.add_argument("--adam_beta_1", type=float, default=0.9)
+    parser.add_argument("--adam_beta_2", type=float, default=0.999)
+    parser.add_argument("--resume_from_file", type=str, default="")
+    parser.add_argument("--output_directory", type=str, default="output")
+    parser.add_argument("--print_every", type=int, default=1)
+    parser.add_argument("--evaluate_every", type=int, default=1)
+    parser.add_argument("--max_training_iterations", type=int, default=10)
+
+    # Testing and predicting arguments
+    parser.add_argument("--max_testing_examples", type=int, default=None)
+    parser.add_argument("--max_decoding_steps", type=int, default=10)
+    parser.add_argument("--output_file_path", type=str, default="predict.json")
 
     # Situation Encoder arguments
-    parser.add_argument('--cnn_hidden_num_channels', type=int, default=50)
-    parser.add_argument('--cnn_kernel_size', type=int, default=5)
-    parser.add_argument('--cnn_hidden_size', type=int, default=1024)
-    parser.add_argument('--cnn_dropout_p', type=float, default=0.1)
-    parser.add_argument('--max_pool_kernel_size', type=int, default=3)
-    parser.add_argument('--max_pool_stride', type=int, default=3)
+    parser.add_argument("--cnn_hidden_num_channels", type=int, default=50)
+    parser.add_argument("--cnn_kernel_size", type=int, default=5)
+    parser.add_argument("--cnn_hidden_size", type=int, default=1024)
+    parser.add_argument("--cnn_dropout_p", type=float, default=0.1)
+    parser.add_argument("--max_pool_kernel_size", type=int, default=3)
+    parser.add_argument("--max_pool_stride", type=int, default=3)
 
     # Command Encoder arguments
-    parser.add_argument('--embedding_dimension', type=int, default=50)
-    parser.add_argument('--num_encoder_layers', type=int, default=2)
-    parser.add_argument('--encoder_hidden_size', type=int, default=50)
-    parser.add_argument('--encoder_dropout_p', type=float, default=0.1)
-    parser.add_argument("--encoder_bidirectional", dest="encoder_bidirectional", default=True, action="store_true")
-    parser.add_argument("--encoder_unidirectional", dest="encoder_bidirectional", default=False, action="store_false")
+    parser.add_argument("--embedding_dimension", type=int, default=50)
+    parser.add_argument("--num_encoder_layers", type=int, default=2)
+    parser.add_argument("--encoder_hidden_size", type=int, default=50)
+    parser.add_argument("--encoder_dropout_p", type=float, default=0.1)
+    parser.add_argument("--encoder_bidirectional", dest="encoder_bidirectional", default=False, action="store_true")
+    parser.add_argument("--encoder_unidirectional", dest="encoder_bidirectional", default=True, action="store_false")
 
     # Decoder arguments
-    parser.add_argument('--num_decoder_layers', type=int, default=2)
-    parser.add_argument('--decoder_dropout_p', type=float, default=0.1)
+    parser.add_argument("--num_decoder_layers", type=int, default=2)
+    parser.add_argument("--decoder_dropout_p", type=float, default=0.1)
 
     # Other arguments
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument("--seed", type=int, default=42)
 
     flags = vars(parser.parse_args())
+
+    if not os.path.exists(flags["output_directory"]):
+        os.mkdir(os.path.join(os.getcwd(), flags["output_directory"]))
 
     # Some checks on the flags
     if flags["generate_vocabularies"]:
@@ -65,6 +87,43 @@ def main():
 
     if flags["mode"] == "train":
         train(**flags)
+    elif flags["mode"] == "predict":
+        assert os.path.exists(flags["input_vocab_path"]) and os.path.exists(flags["target_vocab_path"]), \
+            "No vocabs found at {} and {}".format(flags["input_vocab_path"], flags["target_vocab_path"])
+        logger.info("Loading {} dataset split...".format(flags["split"]))
+        test_set = GroundedScanDataset(flags["data_path"], flags["data_directory"], split=flags["split"],
+                                       input_vocabulary_file=flags["input_vocab_path"],
+                                       target_vocabulary_file=flags["target_vocab_path"], generate_vocabulary=False)
+        test_set.read_dataset(max_examples=flags["max_testing_examples"])
+        logger.info("Done Loading {} dataset split.".format(flags["split"]))
+        logger.info("  Loaded {} examples.".format(test_set.num_examples))
+        logger.info("  Input vocabulary size: {}".format(test_set.input_vocabulary_size))
+        logger.info("  Most common input words: {}".format(test_set.input_vocabulary.most_common(5)))
+        logger.info("  Output vocabulary size: {}".format(test_set.target_vocabulary_size))
+        logger.info("  Most common target words: {}".format(test_set.target_vocabulary.most_common(5)))
+
+        model = Model(image_dimensions=test_set.image_dimensions,
+                      input_vocabulary_size=test_set.input_vocabulary_size,
+                      target_vocabulary_size=test_set.target_vocabulary_size, num_cnn_channels=3,
+                      input_padding_idx=test_set.input_vocabulary.pad_idx,
+                      target_pad_idx=test_set.target_vocabulary.pad_idx,
+                      target_eos_idx=test_set.target_vocabulary.eos_idx,
+                      **flags)
+        model = model.cuda() if use_cuda else model
+
+        # Load model and vocabularies if resuming.
+        assert os.path.isfile(flags["resume_from_file"]), "No checkpoint found at {}".format(flags["resume_from_file"])
+        logger.info("Loading checkpoint from file at '{}'".format(flags["resume_from_file"]))
+        model.load_model(flags["resume_from_file"])
+        start_iteration = model.trained_iterations
+        logger.info("Loaded checkpoint '{}' (iter {})".format(flags["resume_from_file"], start_iteration))
+        output_file = predict_and_save(dataset=test_set, model=model, **flags)
+        logger.info("Saved predictions to {}".format(output_file))
+
+    elif flags["mode"] == "test":
+        raise NotImplementedError()
+    else:
+        raise ValueError("Wrong value for parameters --mode ({}).".format(flags["mode"]))
     # TODO: put in correct mode"s
 
 

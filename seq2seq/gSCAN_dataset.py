@@ -5,6 +5,7 @@ from collections import defaultdict
 from collections import Counter
 import json
 import torch
+import numpy as np
 
 from GroundedScan.dataset import GroundedScan
 
@@ -25,6 +26,9 @@ class Vocabulary(object):
         self.pad_token = pad_token
         self._idx_to_word = [pad_token, unk_token, sos_token, eos_token]
         self._word_to_idx = defaultdict(lambda: self._idx_to_word.index(self.unk_token))
+        self._word_to_idx[unk_token] = 1
+        self._word_to_idx[sos_token] = 2
+        self._word_to_idx[eos_token] = 3
         self._word_frequencies = Counter()
 
     def word_to_idx(self, word: str) -> int:
@@ -46,6 +50,14 @@ class Vocabulary(object):
     @property
     def pad_idx(self):
         return self.word_to_idx(self.pad_token)
+
+    @property
+    def sos_idx(self):
+        return self.word_to_idx(self.sos_token)
+
+    @property
+    def eos_idx(self):
+        return self.word_to_idx(self.eos_token)
 
     @property
     def size(self):
@@ -87,7 +99,7 @@ class Vocabulary(object):
 
 class GroundedScanDataset(object):
     """
-
+    TODO
     """
 
     def __init__(self, path_to_data: str, save_directory: str, split="train", input_vocabulary_file="",
@@ -100,7 +112,11 @@ class GroundedScanDataset(object):
         if split == "test" and generate_vocabulary:
             logger.warning("WARNING: generating a vocabulary from the test set.")
         self.dataset = GroundedScan.load_dataset_from_file(path_to_data, save_directory=save_directory)
+        self.image_dimensions = self.dataset.situation_image_dimension
         self.split = split
+        self._examples = np.array([])
+        self._input_lengths = np.array([])
+        self._target_lengths = np.array([])
         if generate_vocabulary:
             logger.info("Generating vocabularies...")
             self.input_vocabulary = Vocabulary()
@@ -112,6 +128,10 @@ class GroundedScanDataset(object):
             self.target_vocabulary = Vocabulary.load(target_vocabulary_file)
 
     def read_vocabularies(self):
+        """
+        TODO
+        :return:
+        """
         logger.info("Populating vocabulary...")
         for i, example in enumerate(self.dataset.get_examples_with_image(self.split)):
             self.input_vocabulary.add_sentence(example["input_command"])
@@ -130,47 +150,103 @@ class GroundedScanDataset(object):
             raise ValueError("Specified unknown vocabulary in sentence_to_array: {}".format(vocabulary))
         return vocab
 
-    def get_data_batch(self, batch_size=10):
-        # TODO: think more about this and efficiency
-        input_batch = []
-        situation_batch = []
-        target_batch = []
-        input_lengths = []
-        target_lengths = []
-        max_input_length = 0
-        max_target_length = 0
+    def shuffle_data(self) -> {}:
+        """
+        TODO
+        :return:
+        """
+        random_permutation = np.random.permutation(len(self._examples))
+        self._examples = self._examples[random_permutation]
+        self._target_lengths = self._target_lengths[random_permutation]
+        self._input_lengths = self._input_lengths[random_permutation]
+
+    @property
+    def num_examples(self):
+        return len(self._examples)
+
+    def get_data_iterator(self, batch_size=10):
+        """
+        TODO
+        :param batch_size:
+        :return:
+        """
+
+        for example_i in range(0, len(self._examples) - batch_size, batch_size):
+            examples = self._examples[example_i:example_i + batch_size]
+            input_lengths = self._input_lengths[example_i:example_i + batch_size]
+            target_lengths = self._target_lengths[example_i:example_i + batch_size]
+            max_input_length = np.max(input_lengths)
+            max_target_length = np.max(target_lengths)
+            input_batch = []
+            target_batch = []
+            situation_batch = []
+            situation_representation_batch = []
+            for example in examples:
+                to_pad_input = max_input_length - example["input_tensor"].size(1)
+                to_pad_target = max_target_length - example["target_tensor"].size(1)
+                padded_input = torch.cat([
+                    example["input_tensor"],
+                    torch.zeros(int(to_pad_input), dtype=torch.long, device=device).unsqueeze(0)], dim=1)
+                padded_target = torch.cat([
+                    example["target_tensor"],
+                    torch.zeros(int(to_pad_target), dtype=torch.long, device=device).unsqueeze(0)], dim=1)
+                input_batch.append(padded_input)
+                target_batch.append(padded_target)
+                situation_batch.append(example["situation_tensor"])
+                situation_representation_batch.append(example["situation_representation"])
+            yield (torch.cat(input_batch, dim=0), input_lengths, torch.cat(situation_batch, dim=0),
+                   situation_representation_batch, torch.cat(target_batch, dim=0), target_lengths)
+
+    def read_dataset(self, max_examples=None) -> {}:
+        """
+        TODO
+        :param max_examples:
+        :return:
+        """
+        logger.info("Converting dataset to tensors...")
         for example in self.dataset.get_examples_with_image(self.split):
+            if max_examples:
+                if len(self._examples) > max_examples:
+                    return
+            empty_example = {}
             input_commands = example["input_command"]
             target_commands = example["target_command"]
             situation_image = example["situation_image"]
-            if len(input_batch) == batch_size:
-                break
-            input_batch.append(self.sentence_to_array(input_commands, vocabulary="input"))
-            target_batch.append(self.sentence_to_array(target_commands, vocabulary="target"))
-            input_lengths.append(len(input_commands))
-            target_lengths.append(len(target_commands))
-            situation_batch.append(situation_image)
-            if len(input_commands) > max_input_length:
-                max_input_length = len(input_commands)
-            if len(target_commands) > max_target_length:
-                max_target_length = len(target_commands)
+            situation_repr = example["situation_representation"]
+            input_array = self.sentence_to_array(input_commands, vocabulary="input")
+            target_array = self.sentence_to_array(target_commands, vocabulary="target")
+            empty_example["input_tensor"] = torch.tensor(input_array, dtype=torch.long, device=device).unsqueeze(
+                dim=0)
+            empty_example["target_tensor"] = torch.tensor(target_array, dtype=torch.long, device=device).unsqueeze(
+                dim=0)
+            empty_example["situation_tensor"] = torch.tensor(situation_image, dtype=torch.float, device=device
+                                                             ).unsqueeze(dim=0)
+            empty_example["situation_representation"] = situation_repr
+            self._input_lengths = np.append(self._input_lengths, [len(input_array)])
+            self._target_lengths = np.append(self._target_lengths, [len(target_array)])
+            self._examples = np.append(self._examples, [empty_example])
 
-        # Pad the batch with zero's
-        for input_example, target_example in zip(input_batch, target_batch):
-            num_to_pad_input = max_input_length - len(input_example)
-            input_example.extend([self.input_vocabulary.pad_idx] * num_to_pad_input)
-            num_to_pad_target = max_target_length - len(target_example)
-            target_example.extend([self.target_vocabulary.pad_idx] * num_to_pad_target)
-        return (torch.tensor(input_batch, dtype=torch.long, device=device), input_lengths,
-                torch.tensor(target_batch, dtype=torch.long, device=device), target_lengths,
-                torch.tensor(situation_batch, dtype=torch.float, device=device))
-
-    def sentence_to_array(self, sentence: List[str], vocabulary: str):
-        # TODO: add <SOS>, <EOS>
+    def sentence_to_array(self, sentence: List[str], vocabulary: str) -> List[int]:
+        """
+        TODO
+        :param sentence:
+        :param vocabulary:
+        :return:
+        """
         vocab = self.get_vocabulary(vocabulary)
-        return [vocab.word_to_idx(word) for word in sentence]
+        sentence_array = [vocab.sos_idx]
+        for word in sentence:
+            sentence_array.append(vocab.word_to_idx(word))
+        sentence_array.append(vocab.eos_idx)
+        return sentence_array
 
-    def array_to_sentence(self, sentence_array: List[int], vocabulary: str):
+    def array_to_sentence(self, sentence_array: List[int], vocabulary: str) -> List[str]:
+        """
+        TODO
+        :param sentence_array:
+        :param vocabulary:
+        :return:
+        """
         vocab = self.get_vocabulary(vocabulary)
         return [vocab.idx_to_word(word_idx) for word_idx in sentence_array]
 

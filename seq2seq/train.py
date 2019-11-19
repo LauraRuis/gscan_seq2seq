@@ -1,9 +1,14 @@
-# TODO: implement training loop
+# TODO: implement predict function
+# TODO: move attention to before LSTM in seq2seq
+
 import logging
 import torch
+import os
 
 from seq2seq.model import Model
 from seq2seq.gSCAN_dataset import GroundedScanDataset
+from seq2seq.helpers import print_parameters
+from seq2seq.predict import predict
 
 logger = logging.getLogger(__name__)
 use_cuda = True if torch.cuda.is_available() else False
@@ -11,9 +16,13 @@ use_cuda = True if torch.cuda.is_available() else False
 
 def train(data_path: str, data_directory: str, generate_vocabularies: bool, input_vocab_path: str,
           target_vocab_path: str, embedding_dimension: int, num_encoder_layers: int, encoder_dropout_p: float,
-          encoder_bidirectional: bool, training_batch_size: int, num_decoder_layers: int, decoder_dropout_p: float,
+          encoder_bidirectional: bool, training_batch_size: int, test_batch_size: int, max_decoding_steps: int,
+          num_decoder_layers: int, decoder_dropout_p: float,
           cnn_kernel_size: int, cnn_dropout_p: float, cnn_hidden_num_channels: int, max_pool_kernel_size: int,
-          encoder_hidden_size: int, max_pool_stride: int, cnn_hidden_size: int, seed=42, **kwargs):
+          encoder_hidden_size: int, max_pool_stride: int, cnn_hidden_size: int, learning_rate: float,
+          adam_beta_1: float, adam_beta_2: float, resume_from_file: str, max_training_iterations: int,
+          output_directory: str, print_every: int, evaluate_every: int, max_training_examples=None,
+          seed=42, **kwargs):
     device = torch.device(type='cuda') if use_cuda else torch.device(type='cpu')
     cfg = locals().copy()
 
@@ -24,26 +33,87 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
                                        input_vocabulary_file=input_vocab_path,
                                        target_vocabulary_file=target_vocab_path,
                                        generate_vocabulary=generate_vocabularies)
+    training_set.read_dataset(max_examples=max_training_examples)
     logger.info("Done Loading Training set.")
+    logger.info("  Loaded {} training examples.".format(training_set.num_examples))
     logger.info("  Input vocabulary size training set: {}".format(training_set.input_vocabulary_size))
     logger.info("  Most common input words: {}".format(training_set.input_vocabulary.most_common(5)))
     logger.info("  Output vocabulary size training set: {}".format(training_set.target_vocabulary_size))
     logger.info("  Most common target words: {}".format(training_set.target_vocabulary.most_common(5)))
 
-    test_sentence = ["This", "is", "a", "circle"]
-    array = training_set.sentence_to_array(test_sentence, vocabulary="input")
-    test_sentence_decoded = training_set.array_to_sentence(array, vocabulary="input")
+    logger.info("Loading Test set...")
+    test_set = GroundedScanDataset(data_path, data_directory, split="test",  # TODO: also dev set
+                                   input_vocabulary_file=input_vocab_path,
+                                   target_vocabulary_file=target_vocab_path, generate_vocabulary=False)
+    test_set.read_dataset(max_examples=kwargs["max_testing_examples"])
+    logger.info("Done Loading Test set.")
+
     if generate_vocabularies:
         training_set.save_vocabularies(input_vocab_path, target_vocab_path)
+        logger.info("Saved vocabularies to {} for input and {} for target.".format(input_vocab_path, target_vocab_path))
 
-    input_batch, input_lengths, target_batch, target_lengths, situation_batch = training_set.get_data_batch(
-        batch_size=training_batch_size)
-    image_dimensions, _, num_channels = situation_batch[0].shape
+    model = Model(image_dimensions=training_set.image_dimensions,
+                  input_vocabulary_size=training_set.input_vocabulary_size,
+                  target_vocabulary_size=training_set.target_vocabulary_size, num_cnn_channels=3,
+                  input_padding_idx=training_set.input_vocabulary.pad_idx,
+                  target_pad_idx=training_set.target_vocabulary.pad_idx,
+                  target_eos_idx=training_set.target_vocabulary.eos_idx,
+                  **cfg)
+    model = model.cuda() if use_cuda else model
+    print_parameters(model)
+    trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    optimizer = torch.optim.Adam(trainable_parameters, lr=learning_rate, betas=(adam_beta_1, adam_beta_2))
 
-    model = Model(image_dimensions=image_dimensions, input_vocabulary_size=training_set.input_vocabulary_size,
-                  target_vocabulary_size=training_set.target_vocabulary_size, num_cnn_channels=num_channels,
-                  input_padding_idx=training_set.input_vocabulary.pad_idx, **cfg)
+    # Load model and vocabularies if resuming.
+    start_iteration = 1
+    best_iteration = 1
+    best_loss = float('inf')
+    if resume_from_file:
+        assert os.path.isfile(resume_from_file), "No checkpoint found at {}".format(resume_from_file)
+        logger.info("Loading checkpoint from file at '{}'".format(resume_from_file))
+        optimizer_state_dict = model.load_model(resume_from_file)
+        optimizer.load_state_dict(optimizer_state_dict)
+        start_iteration = model.trained_iterations
+        logger.info("Loaded checkpoint '{}' (iter {})".format(resume_from_file, start_iteration))
 
-    test = model(input_batch, input_lengths, situation_batch, target_batch, target_lengths)
+    # TODO: Make sure EOS doesn't get fed to the model, just needed in targets
+    # TODO: Make sure SOS doesn't get taken into account for loss
+    # TODO: count iteration differently (also for loading state dict and stuff
+    logger.info("Training starts..")
+    it = 0
+    for iteration_i in range(start_iteration, max_training_iterations + 1):
 
-    print()
+        # TODO: shuffle after every
+        training_set.shuffle_data()
+        for (input_batch, input_lengths, situation_batch, _, target_batch,
+             target_lengths) in training_set.get_data_iterator(
+                batch_size=training_batch_size):
+            model.train()
+            target_scores = model(input_batch, input_lengths, situation_batch, target_batch, target_lengths)
+            loss = model.get_loss(target_scores, target_batch)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            if loss < best_loss:
+                best_loss = loss
+                is_best = True
+            else:
+                is_best = False
+            model.update_state(is_best)
+
+            if iteration_i % print_every == 0:
+                accuracy = model.get_accuracy(target_scores, target_batch)
+                logger.info("Iteration %08d, loss %8.4f, accuracy %5.2f,learning_rate %.5f" % (iteration_i, loss, accuracy,
+                                                                                               learning_rate))
+
+            if iteration_i % evaluate_every == 0:
+                model.eval()
+                output_file = predict(data_iterator=test_set.get_data_iterator(batch_size=test_batch_size),
+                                      model=model, max_decoding_steps=max_decoding_steps,
+                                      sos_idx=test_set.target_vocabulary.sos_idx,
+                                      eos_idx=test_set.target_vocabulary.eos_idx)
+                logger.info("Saved predictions to {}".format(output_file))
+                file_name = "checkpoint_it_{}.pth.tar".format(str(iteration_i))
+                model.save_checkpoint(file_name=file_name, is_best=is_best, optimizer_state_dict=optimizer.state_dict())
+

@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -25,3 +26,12 @@ def sequence_mask(sequence_lengths: torch.LongTensor, max_len=None) -> torch.ten
 
     # [batch_size, max_len](boolean array of which elements to include)
     return sequence_range_expand < seq_length_expand
+
+
+def print_parameters(model: torch.nn.Module) -> {}:
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    n_params = sum([np.prod(p.size()) for p in model_parameters])
+    print("Total parameters: %d" % n_params)
+    for name, p in model.named_parameters():
+        if p.requires_grad:
+            print("%s : %s" % (name, list(p.size())))

@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from typing import List
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -35,3 +36,14 @@ def print_parameters(model: torch.nn.Module) -> {}:
     for name, p in model.named_parameters():
         if p.requires_grad:
             print("%s : %s" % (name, list(p.size())))
+
+
+def sequence_accuracy(prediction: List[int], target: List[int]) -> float:
+    correct = 0
+    total = 0
+    for i, target_int in enumerate(target):
+        prediction_int = prediction[i]
+        if prediction_int == target_int:
+            correct += 1
+        total += 1
+    return correct / total

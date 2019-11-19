@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 class Vocabulary(object):
+    """
+    Object that maps words in string form to indices to be processed by numerical models.
+    """
 
     def __init__(self, unk_token="<UNK>", sos_token="<SOS>", eos_token="<EOS>", pad_token="<PAD>"):
         """
@@ -99,7 +102,7 @@ class Vocabulary(object):
 
 class GroundedScanDataset(object):
     """
-    TODO
+    Loads a
     """
 
     def __init__(self, path_to_data: str, save_directory: str, split="train", input_vocabulary_file="",

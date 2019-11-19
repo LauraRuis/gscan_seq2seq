@@ -8,7 +8,7 @@ import os
 from seq2seq.model import Model
 from seq2seq.gSCAN_dataset import GroundedScanDataset
 from seq2seq.helpers import print_parameters
-from seq2seq.predict import predict
+from seq2seq.evaluate import evaluate
 
 logger = logging.getLogger(__name__)
 use_cuda = True if torch.cuda.is_available() else False
@@ -41,16 +41,16 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
     logger.info("  Output vocabulary size training set: {}".format(training_set.target_vocabulary_size))
     logger.info("  Most common target words: {}".format(training_set.target_vocabulary.most_common(5)))
 
+    if generate_vocabularies:
+        training_set.save_vocabularies(input_vocab_path, target_vocab_path)
+        logger.info("Saved vocabularies to {} for input and {} for target.".format(input_vocab_path, target_vocab_path))
+
     logger.info("Loading Test set...")
     test_set = GroundedScanDataset(data_path, data_directory, split="test",  # TODO: also dev set
                                    input_vocabulary_file=input_vocab_path,
                                    target_vocabulary_file=target_vocab_path, generate_vocabulary=False)
     test_set.read_dataset(max_examples=kwargs["max_testing_examples"])
     logger.info("Done Loading Test set.")
-
-    if generate_vocabularies:
-        training_set.save_vocabularies(input_vocab_path, target_vocab_path)
-        logger.info("Saved vocabularies to {} for input and {} for target.".format(input_vocab_path, target_vocab_path))
 
     model = Model(image_dimensions=training_set.image_dimensions,
                   input_vocabulary_size=training_set.input_vocabulary_size,
@@ -78,12 +78,11 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
 
     # TODO: Make sure EOS doesn't get fed to the model, just needed in targets
     # TODO: Make sure SOS doesn't get taken into account for loss
-    # TODO: count iteration differently (also for loading state dict and stuff
     logger.info("Training starts..")
-    it = 0
-    for iteration_i in range(start_iteration, max_training_iterations + 1):
+    training_iteration = start_iteration
+    while training_iteration < max_training_iterations:
 
-        # TODO: shuffle after every
+        # Shuffle the dataset and loop over it.
         training_set.shuffle_data()
         for (input_batch, input_lengths, situation_batch, _, target_batch,
              target_lengths) in training_set.get_data_iterator(
@@ -102,18 +101,24 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
                 is_best = False
             model.update_state(is_best)
 
-            if iteration_i % print_every == 0:
+            if training_iteration % print_every == 0:
                 accuracy = model.get_accuracy(target_scores, target_batch)
-                logger.info("Iteration %08d, loss %8.4f, accuracy %5.2f,learning_rate %.5f" % (iteration_i, loss, accuracy,
-                                                                                               learning_rate))
+                logger.info("Iteration %08d, loss %8.4f, accuracy %5.2f,learning_rate %.5f" % (training_iteration, loss,
+                                                                                               accuracy, learning_rate))
 
-            if iteration_i % evaluate_every == 0:
+            if training_iteration % evaluate_every == 0:
                 model.eval()
-                output_file = predict(data_iterator=test_set.get_data_iterator(batch_size=test_batch_size),
-                                      model=model, max_decoding_steps=max_decoding_steps,
-                                      sos_idx=test_set.target_vocabulary.sos_idx,
-                                      eos_idx=test_set.target_vocabulary.eos_idx)
-                logger.info("Saved predictions to {}".format(output_file))
-                file_name = "checkpoint_it_{}.pth.tar".format(str(iteration_i))
+                logger.info("Evaluating..")
+                accuracy = evaluate(test_set.get_data_iterator(batch_size=1), model=model,
+                                    max_decoding_steps=max_decoding_steps, sos_idx=test_set.target_vocabulary.sos_idx,
+                                    eos_idx=test_set.target_vocabulary.eos_idx)
+                logger.info("  Evaluation Accuracy: %5.2f" % accuracy)
+                file_name = "checkpoint_it_{}.pth.tar".format(str(training_iteration))
                 model.save_checkpoint(file_name=file_name, is_best=is_best, optimizer_state_dict=optimizer.state_dict())
+
+            training_iteration += 1
+            if training_iteration > max_training_iterations:
+                break
+
+    logger.info("Finished training.")
 

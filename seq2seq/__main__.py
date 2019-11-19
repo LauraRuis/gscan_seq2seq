@@ -1,6 +1,7 @@
-# TODO: write evaluation
 # TODO: already make sequence masks in gSCAN_dataset.py
 # TODO: add option to visualize predictions from json file in GroundedScanDataset
+# TODO: visualize attention weights
+# TODO: option to train without teacher forcing?
 
 import argparse
 import logging
@@ -37,20 +38,20 @@ def main():
 
     # Training and learning arguments
     parser.add_argument("--training_batch_size", type=int, default=10)
-    parser.add_argument("--test_batch_size", type=int, default=10)
+    parser.add_argument("--test_batch_size", type=int, default=1)
     parser.add_argument("--max_training_examples", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=0.001)
     parser.add_argument("--adam_beta_1", type=float, default=0.9)
     parser.add_argument("--adam_beta_2", type=float, default=0.999)
     parser.add_argument("--resume_from_file", type=str, default="")
     parser.add_argument("--output_directory", type=str, default="output")
-    parser.add_argument("--print_every", type=int, default=1)
-    parser.add_argument("--evaluate_every", type=int, default=1)
-    parser.add_argument("--max_training_iterations", type=int, default=10)
+    parser.add_argument("--print_every", type=int, default=10)
+    parser.add_argument("--evaluate_every", type=int, default=100)
+    parser.add_argument("--max_training_iterations", type=int, default=1000)
 
     # Testing and predicting arguments
     parser.add_argument("--max_testing_examples", type=int, default=None)
-    parser.add_argument("--max_decoding_steps", type=int, default=10)
+    parser.add_argument("--max_decoding_steps", type=int, default=20)
     parser.add_argument("--output_file_path", type=str, default="predict.json")
 
     # Situation Encoder arguments
@@ -85,9 +86,12 @@ def main():
     if flags["generate_vocabularies"]:
         assert flags["input_vocab_path"] and flags["target_vocab_path"], "Please specify paths to vocabularies to save."
 
+    if flags["test_batch_size"] > 1:
+        raise NotImplementedError("Test batch size larger than 1 not implemented.")
+
     if flags["mode"] == "train":
         train(**flags)
-    elif flags["mode"] == "predict":
+    elif flags["mode"] == "test":
         assert os.path.exists(flags["input_vocab_path"]) and os.path.exists(flags["target_vocab_path"]), \
             "No vocabs found at {} and {}".format(flags["input_vocab_path"], flags["target_vocab_path"])
         logger.info("Loading {} dataset split...".format(flags["split"]))
@@ -119,12 +123,10 @@ def main():
         logger.info("Loaded checkpoint '{}' (iter {})".format(flags["resume_from_file"], start_iteration))
         output_file = predict_and_save(dataset=test_set, model=model, **flags)
         logger.info("Saved predictions to {}".format(output_file))
-
-    elif flags["mode"] == "test":
+    elif flags["mode"] == "predict":
         raise NotImplementedError()
     else:
         raise ValueError("Wrong value for parameters --mode ({}).".format(flags["mode"]))
-    # TODO: put in correct mode"s
 
 
 if __name__ == "__main__":

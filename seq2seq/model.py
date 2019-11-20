@@ -25,18 +25,21 @@ class Model(nn.Module):
                  num_encoder_layers: int, target_vocabulary_size: int, encoder_dropout_p: float,
                  encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float, image_dimensions: int,
                  num_cnn_channels: int, cnn_kernel_size: int, cnn_dropout_p: float, cnn_hidden_num_channels: int,
-                 cnn_hidden_size: int, input_padding_idx: int, max_pool_kernel_size: int, max_pool_stride: int,
-                 target_pad_idx: int, target_eos_idx: int, output_directory: str,
+                 cnn_hidden_size: int, situation_embedding_size: int, input_padding_idx: int,
+                 max_pool_kernel_size: int, max_pool_stride: int, target_pad_idx: int, target_eos_idx: int,
+                 output_directory: str,
                  **kwargs):
         super(Model, self).__init__()
 
         # TODO: check that all these also get dropout_p = 0 if model.test()
-        self.encoder = EncoderRNN(input_size=input_vocabulary_size, embedding_dim=embedding_dimension,
+        self.encoder = EncoderRNN(input_size=input_vocabulary_size,
+                                  embedding_dim=embedding_dimension,
+                                  rnn_input_size=embedding_dimension + situation_embedding_size,
                                   hidden_size=encoder_hidden_size, num_layers=num_encoder_layers,
                                   dropout_probability=encoder_dropout_p, bidirectional=encoder_bidirectional,
                                   padding_idx=input_padding_idx)
 
-        self.attention_decoder = AttentionDecoderRNN(hidden_size=embedding_dimension,
+        self.attention_decoder = AttentionDecoderRNN(hidden_size=encoder_hidden_size,
                                                      output_size=target_vocabulary_size, num_layers=num_decoder_layers,
                                                      dropout_probability=decoder_dropout_p)
 
@@ -46,7 +49,7 @@ class Model(nn.Module):
                                                   max_pool_kernel_size=max_pool_kernel_size,
                                                   max_pool_stride=max_pool_stride,
                                                   intermediate_hidden_size=cnn_hidden_size,
-                                                  output_dimension=embedding_dimension)
+                                                  output_dimension=situation_embedding_size)
 
         self.target_eos_idx = target_eos_idx
         self.target_pad_idx = target_pad_idx
@@ -61,8 +64,8 @@ class Model(nn.Module):
         # Get rid of start-of-sequence-tokens in targets batch and append a padding token to each example in the batch.
         batch_size, max_time = input_tensor.size()
         input_tensor = input_tensor[:, 1:]
-        input_tensor = torch.cat([input_tensor, torch.zeros(batch_size, dtype=torch.long).unsqueeze(dim=1)], dim=1)
-        return input_tensor
+        output_tensor = torch.cat([input_tensor, torch.zeros(batch_size, dtype=torch.long).unsqueeze(dim=1)], dim=1)
+        return output_tensor
 
     def get_accuracy(self, target_scores: torch.Tensor, targets: torch.Tensor) -> float:
         """
@@ -101,7 +104,7 @@ class Model(nn.Module):
     def encode_input(self, commands_input: torch.LongTensor, commands_lengths: List[int],
                      situations_input: torch.Tensor) -> Dict[str, torch.Tensor]:
         encoded_image = self.situation_encoder(situations_input)
-        hidden, encoder_outputs = self.encoder(commands_input, commands_lengths)
+        hidden, encoder_outputs = self.encoder(commands_input, commands_lengths, situation_representation=encoded_image)
         return {"encoded_situations": encoded_image, "encoded_commands": encoder_outputs, "hidden_states": hidden}
 
     def predict_sequence(self):

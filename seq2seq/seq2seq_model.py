@@ -23,7 +23,7 @@ class EncoderRNN(nn.Module):
     The RNN hidden vector (not cell vector) at each step is captured,
       for transfer to an attention-based decoder
     """
-    def __init__(self, input_size: int, embedding_dim: int, hidden_size: int, num_layers: int,
+    def __init__(self, input_size: int, embedding_dim: int, rnn_input_size: int, hidden_size: int, num_layers: int,
                  dropout_probability: float, bidirectional: bool, padding_idx: int):
         """
         :param input_size: number of input symbols
@@ -41,13 +41,15 @@ class EncoderRNN(nn.Module):
         self.bidirectional = bidirectional
         self.embedding = nn.Embedding(input_size, embedding_dim, padding_idx=padding_idx)
         self.dropout = nn.Dropout(dropout_probability)
-        self.lstm = nn.LSTM(input_size=embedding_dim, hidden_size=hidden_size, num_layers=num_layers,
+        self.lstm = nn.LSTM(input_size=rnn_input_size, hidden_size=hidden_size, num_layers=num_layers,
                             dropout=dropout_probability, bidirectional=bidirectional)
 
-    def forward(self, input_batch: torch.LongTensor, input_lengths: List[int]) -> Tuple[torch.Tensor, dict]:
+    def forward(self, input_batch: torch.LongTensor, input_lengths: List[int],
+                situation_representation: torch.FloatTensor) -> Tuple[torch.Tensor, dict]:
         """
         :param input_batch: [batch_size, max_length]; batched padded input sequences
         :param input_lengths: length of each padded input sequence.
+        :param situation_representation: ..TODO
         :return: hidden states for last layer of last time step, the output of the last layer per time step and
         the sequence lengths per example in the batch.
         NB: The hidden states in the bidirectional case represent the final hidden state of each directional encoder,
@@ -57,6 +59,9 @@ class EncoderRNN(nn.Module):
         assert input_batch.size(0) == len(input_lengths), "Wrong amount of lengths passed to .forward()"
         input_embeddings = self.embedding(input_batch)  # [batch_size, max_length, embedding_dim]
         input_embeddings = self.dropout(input_embeddings)  # [batch_size, max_length, embedding_dim]
+        max_length = input_embeddings.size(1)
+        situation_representation = situation_representation.unsqueeze(dim=1).expand((-1, max_length, -1))
+        input_embeddings = torch.cat([input_embeddings, situation_representation], dim=2)
 
         # Sort the sequences by length in descending order.
         batch_size = len(input_lengths)
@@ -71,16 +76,16 @@ class EncoderRNN(nn.Module):
         # hidden, cell [num_layers * num_directions, batch_size, embedding_dim]
         # hidden and cell are unpacked, such that they store the last hidden state for each sequence in the batch.
         output_per_timestep, _ = pad_packed_sequence(
-            packed_output)  # [max_length, batch_size, embedding_dim * num_directions]
+            packed_output)  # [max_length, batch_size, hidden_size * num_directions]
 
         # If biLSTM, sum the outputs for each direction
         # TODO: ask question about this (why not half the hidden size and concat for example?)
         if self.bidirectional:
-            output_per_timestep = output_per_timestep.view(max_length, batch_size, 2, self.embedding_dim)
-            output_per_timestep = torch.sum(output_per_timestep, 2)  # [max_length, batch_size, embedding_dim]
-            hidden = hidden.view(self.num_layers, 2, batch_size, self.embedding_dim)
-            hidden = torch.sum(hidden, 1)  # [num_layers, batch_size, embedding_dim]
-        hidden = hidden[-1, :, :]  # [batch_size, embedding_dim] (get the last layer)
+            output_per_timestep = output_per_timestep.view(int(max_length), batch_size, 2, self.hidden_size)
+            output_per_timestep = torch.sum(output_per_timestep, 2)  # [max_length, batch_size, hidden_size]
+            hidden = hidden.view(self.num_layers, 2, batch_size, self.hidden_size)
+            hidden = torch.sum(hidden, 1)  # [num_layers, batch_size, hidden_size]
+        hidden = hidden[-1, :, :]  # [batch_size, hidden_size] (get the last layer)
 
         # Reverse the sorting.
         _, unperm_idx = perm_idx.sort(0)

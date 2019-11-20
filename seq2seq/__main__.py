@@ -1,5 +1,4 @@
 # TODO: already make sequence masks in gSCAN_dataset.py
-# TODO: add option to visualize predictions from json file in GroundedScanDataset
 # TODO: visualize attention weights
 # TODO: option to train without teacher forcing?
 
@@ -28,7 +27,7 @@ def main():
     parser.add_argument("--mode", type=str, default="train", help="train, test or predict")
     parser.add_argument("--split", type=str, default="test", help="Which split to get from Grounded Scan.")
     parser.add_argument("--data_directory", type=str, default="data", help="Path to folder with data.")
-    parser.add_argument("--data_path", type=str, default="data/new_dataset.txt", help="Path to file with data.")
+    parser.add_argument("--data_path", type=str, default="data/dataset_dummy.txt", help="Path to file with data.")
     parser.add_argument("--input_vocab_path", type=str, default="data/training_input_vocab.txt",
                         help="Path to file with input vocabulary as saved by Vocabulary class in gSCAN_dataset.py")
     parser.add_argument("--target_vocab_path", type=str, default="data/training_target_vocab.txt",
@@ -37,7 +36,7 @@ def main():
     parser.add_argument("--load_vocabularies", dest="generate_vocabularies", default=True, action="store_false")
 
     # Training and learning arguments
-    parser.add_argument("--training_batch_size", type=int, default=10)
+    parser.add_argument("--training_batch_size", type=int, default=100)
     parser.add_argument("--test_batch_size", type=int, default=1)
     parser.add_argument("--max_training_examples", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=0.001)
@@ -45,9 +44,9 @@ def main():
     parser.add_argument("--adam_beta_2", type=float, default=0.999)
     parser.add_argument("--resume_from_file", type=str, default="")
     parser.add_argument("--output_directory", type=str, default="output")
-    parser.add_argument("--print_every", type=int, default=10)
-    parser.add_argument("--evaluate_every", type=int, default=100)
-    parser.add_argument("--max_training_iterations", type=int, default=1000)
+    parser.add_argument("--print_every", type=int, default=1)
+    parser.add_argument("--evaluate_every", type=int, default=10)
+    parser.add_argument("--max_training_iterations", type=int, default=100000)
 
     # Testing and predicting arguments
     parser.add_argument("--max_testing_examples", type=int, default=None)
@@ -56,6 +55,7 @@ def main():
 
     # Situation Encoder arguments
     parser.add_argument("--cnn_hidden_num_channels", type=int, default=50)
+    parser.add_argument("--situation_embedding_size", type=int, default=100)
     parser.add_argument("--cnn_kernel_size", type=int, default=5)
     parser.add_argument("--cnn_hidden_size", type=int, default=1024)
     parser.add_argument("--cnn_dropout_p", type=float, default=0.1)
@@ -65,10 +65,10 @@ def main():
     # Command Encoder arguments
     parser.add_argument("--embedding_dimension", type=int, default=50)
     parser.add_argument("--num_encoder_layers", type=int, default=2)
-    parser.add_argument("--encoder_hidden_size", type=int, default=50)
+    parser.add_argument("--encoder_hidden_size", type=int, default=300)
     parser.add_argument("--encoder_dropout_p", type=float, default=0.1)
-    parser.add_argument("--encoder_bidirectional", dest="encoder_bidirectional", default=False, action="store_true")
-    parser.add_argument("--encoder_unidirectional", dest="encoder_bidirectional", default=True, action="store_false")
+    parser.add_argument("--encoder_bidirectional", dest="encoder_bidirectional", default=True, action="store_true")
+    parser.add_argument("--encoder_unidirectional", dest="encoder_bidirectional", default=False, action="store_false")
 
     # Decoder arguments
     parser.add_argument("--num_decoder_layers", type=int, default=2)
@@ -124,6 +124,7 @@ def main():
         output_file = predict_and_save(dataset=test_set, model=model, **flags)
         logger.info("Saved predictions to {}".format(output_file))
     elif flags["mode"] == "predict":
+        # TODO: implement prediction from file without targets?
         raise NotImplementedError()
     else:
         raise ValueError("Wrong value for parameters --mode ({}).".format(flags["mode"]))

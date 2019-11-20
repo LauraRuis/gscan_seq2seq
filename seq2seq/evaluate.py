@@ -12,6 +12,7 @@ def evaluate(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int,
                                                                        max_decoding_steps=max_decoding_steps,
                                                                        sos_idx=sos_idx,
                                                                        eos_idx=eos_idx):
+        # TODO: maybe BLEU better? look into what if all correct but sequence larger
         accuracy = sequence_accuracy(output_sequence, target_sequence[0].tolist())
         accuracies.append(accuracy)
     return np.mean(np.array(accuracies))

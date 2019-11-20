@@ -1,5 +1,7 @@
 # TODO: implement predict function
 # TODO: move attention to before LSTM in seq2seq
+# TODO: visualize training attention weights
+# TODO: visualize training loss
 
 import logging
 import torch
@@ -17,7 +19,7 @@ use_cuda = True if torch.cuda.is_available() else False
 def train(data_path: str, data_directory: str, generate_vocabularies: bool, input_vocab_path: str,
           target_vocab_path: str, embedding_dimension: int, num_encoder_layers: int, encoder_dropout_p: float,
           encoder_bidirectional: bool, training_batch_size: int, test_batch_size: int, max_decoding_steps: int,
-          num_decoder_layers: int, decoder_dropout_p: float,
+          num_decoder_layers: int, decoder_dropout_p: float, situation_embedding_size: int,
           cnn_kernel_size: int, cnn_dropout_p: float, cnn_hidden_num_channels: int, max_pool_kernel_size: int,
           encoder_hidden_size: int, max_pool_stride: int, cnn_hidden_size: int, learning_rate: float,
           adam_beta_1: float, adam_beta_2: float, resume_from_file: str, max_training_iterations: int,
@@ -67,6 +69,7 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
     # Load model and vocabularies if resuming.
     start_iteration = 1
     best_iteration = 1
+    best_accuracy = 0
     best_loss = float('inf')
     if resume_from_file:
         assert os.path.isfile(resume_from_file), "No checkpoint found at {}".format(resume_from_file)
@@ -87,19 +90,13 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
         for (input_batch, input_lengths, situation_batch, _, target_batch,
              target_lengths) in training_set.get_data_iterator(
                 batch_size=training_batch_size):
+            is_best = False
             model.train()
             target_scores = model(input_batch, input_lengths, situation_batch, target_batch, target_lengths)
             loss = model.get_loss(target_scores, target_batch)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-
-            if loss < best_loss:
-                best_loss = loss
-                is_best = True
-            else:
-                is_best = False
-            model.update_state(is_best)
 
             if training_iteration % print_every == 0:
                 accuracy = model.get_accuracy(target_scores, target_batch)
@@ -113,6 +110,10 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
                                     max_decoding_steps=max_decoding_steps, sos_idx=test_set.target_vocabulary.sos_idx,
                                     eos_idx=test_set.target_vocabulary.eos_idx)
                 logger.info("  Evaluation Accuracy: %5.2f" % accuracy)
+                if accuracy > best_accuracy:
+                    is_best = True
+                    best_accuracy = accuracy
+                    model.update_state(is_best=is_best)
                 file_name = "checkpoint_it_{}.pth.tar".format(str(training_iteration))
                 model.save_checkpoint(file_name=file_name, is_best=is_best, optimizer_state_dict=optimizer.state_dict())
 

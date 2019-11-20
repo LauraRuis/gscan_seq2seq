@@ -83,6 +83,8 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
             output_sequence.append(token.data[0].item())
             decoding_iteration += 1
 
+        if output_sequence[-1] == eos_idx:
+            output_sequence.pop()
         yield input_sequence, situation_spec, output_sequence, target_sequence
 
     elapsed_time = time.time() - start_time

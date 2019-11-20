@@ -42,6 +42,8 @@ def sequence_accuracy(prediction: List[int], target: List[int]) -> float:
     correct = 0
     total = 0
     for i, target_int in enumerate(target):
+        if i >= len(prediction):
+            break
         prediction_int = prediction[i]
         if prediction_int == target_int:
             correct += 1

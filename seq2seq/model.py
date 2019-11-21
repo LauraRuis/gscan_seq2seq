@@ -32,17 +32,6 @@ class Model(nn.Module):
         super(Model, self).__init__()
 
         # TODO: check that all these also get dropout_p = 0 if model.test()
-        self.encoder = EncoderRNN(input_size=input_vocabulary_size,
-                                  embedding_dim=embedding_dimension,
-                                  rnn_input_size=embedding_dimension + situation_embedding_size,
-                                  hidden_size=encoder_hidden_size, num_layers=num_encoder_layers,
-                                  dropout_probability=encoder_dropout_p, bidirectional=encoder_bidirectional,
-                                  padding_idx=input_padding_idx)
-
-        self.attention_decoder = AttentionDecoderRNN(hidden_size=encoder_hidden_size,
-                                                     output_size=target_vocabulary_size, num_layers=num_decoder_layers,
-                                                     dropout_probability=decoder_dropout_p)
-
         self.situation_encoder = ConvolutionalNet(image_width=image_dimensions, num_channels=num_cnn_channels,
                                                   num_conv_channels=cnn_hidden_num_channels,
                                                   kernel_size=cnn_kernel_size, dropout_probability=cnn_dropout_p,
@@ -50,6 +39,18 @@ class Model(nn.Module):
                                                   max_pool_stride=max_pool_stride,
                                                   intermediate_hidden_size=cnn_hidden_size,
                                                   output_dimension=situation_embedding_size)
+        self.image_situation_embedding_size = self.situation_encoder.output_dimension
+
+        self.encoder = EncoderRNN(input_size=input_vocabulary_size,
+                                  embedding_dim=embedding_dimension,
+                                  rnn_input_size=embedding_dimension + self.image_situation_embedding_size,
+                                  hidden_size=encoder_hidden_size, num_layers=num_encoder_layers,
+                                  dropout_probability=encoder_dropout_p, bidirectional=encoder_bidirectional,
+                                  padding_idx=input_padding_idx)
+
+        self.attention_decoder = AttentionDecoderRNN(hidden_size=encoder_hidden_size,
+                                                     output_size=target_vocabulary_size, num_layers=num_decoder_layers,
+                                                     dropout_probability=decoder_dropout_p)
 
         self.target_eos_idx = target_eos_idx
         self.target_pad_idx = target_pad_idx

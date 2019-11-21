@@ -114,8 +114,9 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
                     is_best = True
                     best_accuracy = accuracy
                     model.update_state(is_best=is_best)
-                file_name = "checkpoint_it_{}.pth.tar".format(str(training_iteration))
-                model.save_checkpoint(file_name=file_name, is_best=is_best, optimizer_state_dict=optimizer.state_dict())
+                file_name = "checkpoint.pth.tar".format(str(training_iteration))
+                if is_best:
+                    model.save_checkpoint(file_name=file_name, is_best=is_best, optimizer_state_dict=optimizer.state_dict())
 
             training_iteration += 1
             if training_iteration > max_training_iterations:

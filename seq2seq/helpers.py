@@ -48,4 +48,4 @@ def sequence_accuracy(prediction: List[int], target: List[int]) -> float:
         if prediction_int == target_int:
             correct += 1
         total += 1
-    return correct / total
+    return (correct / total) * 100

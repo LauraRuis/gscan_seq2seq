@@ -25,29 +25,30 @@ class Model(nn.Module):
                  num_encoder_layers: int, target_vocabulary_size: int, encoder_dropout_p: float,
                  encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float, image_dimensions: int,
                  num_cnn_channels: int, cnn_kernel_size: int, cnn_dropout_p: float, cnn_hidden_num_channels: int,
-                 cnn_hidden_size: int, situation_embedding_size: int, input_padding_idx: int,
-                 max_pool_kernel_size: int, max_pool_stride: int, target_pad_idx: int, target_eos_idx: int,
-                 output_directory: str,
+                 input_padding_idx: int, target_pad_idx: int, target_eos_idx: int, output_directory: str,
                  **kwargs):
         super(Model, self).__init__()
 
-        # TODO: check that all these also get dropout_p = 0 if model.test()
-        self.situation_encoder = ConvolutionalNet(image_width=image_dimensions, num_channels=num_cnn_channels,
+        # Input: [batch_size, image_width, image_width, image_channels]
+        # Output: [batch_size, image_width * image_width, output_dimension]
+        self.situation_encoder = ConvolutionalNet(num_channels=num_cnn_channels,
                                                   num_conv_channels=cnn_hidden_num_channels,
                                                   kernel_size=cnn_kernel_size, dropout_probability=cnn_dropout_p,
-                                                  max_pool_kernel_size=max_pool_kernel_size,
-                                                  max_pool_stride=max_pool_stride,
-                                                  intermediate_hidden_size=cnn_hidden_size,
-                                                  output_dimension=situation_embedding_size)
-        self.image_situation_embedding_size = self.situation_encoder.output_dimension
+                                                  output_dimension=encoder_hidden_size)
 
+        # Input: [batch_size, max_input_length]
+        # Output: [batch_size, hidden_size], [batch_size, max_input_length, hidden_size]
         self.encoder = EncoderRNN(input_size=input_vocabulary_size,
                                   embedding_dim=embedding_dimension,
-                                  rnn_input_size=embedding_dimension + self.image_situation_embedding_size,
+                                  rnn_input_size=embedding_dimension,
                                   hidden_size=encoder_hidden_size, num_layers=num_encoder_layers,
                                   dropout_probability=encoder_dropout_p, bidirectional=encoder_bidirectional,
                                   padding_idx=input_padding_idx)
 
+        # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
+        # Input for attention: [batch_size, max_input_length, hidden_size],
+        #                      [batch_size, image_width * image_width, hidden_size]
+        # Output: [max_target_length, batch_size, target_vocabulary_size]
         self.attention_decoder = AttentionDecoderRNN(hidden_size=encoder_hidden_size,
                                                      output_size=target_vocabulary_size, num_layers=num_decoder_layers,
                                                      dropout_probability=decoder_dropout_p)
@@ -62,7 +63,7 @@ class Model(nn.Module):
 
     @staticmethod
     def remove_start_of_sequence(input_tensor: torch.Tensor) -> torch.Tensor:
-        # Get rid of start-of-sequence-tokens in targets batch and append a padding token to each example in the batch.
+        """Get rid of SOS-tokens in targets batch and append a padding token to each example in the batch."""
         batch_size, max_time = input_tensor.size()
         input_tensor = input_tensor[:, 1:]
         output_tensor = torch.cat([input_tensor, torch.zeros(batch_size, dtype=torch.long).unsqueeze(dim=1)], dim=1)
@@ -70,7 +71,6 @@ class Model(nn.Module):
 
     def get_accuracy(self, target_scores: torch.Tensor, targets: torch.Tensor) -> float:
         """
-        TODO: write test for accuracy
         :param target_scores: probabilities over target vocabulary outputted by the model, of size
                               [batch_size, max_target_length, target_vocab_size]
         :param targets:  ground-truth targets of size [batch_size, max_target_length]
@@ -88,7 +88,6 @@ class Model(nn.Module):
 
     def get_loss(self, target_scores: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
-        TODO: write test for loss
         :param target_scores: probabilities over target vocabulary outputted by the model, of size
                               [batch_size, max_target_length, target_vocab_size]
         :param targets: ground-truth targets of size [batch_size, max_target_length]
@@ -105,24 +104,27 @@ class Model(nn.Module):
     def encode_input(self, commands_input: torch.LongTensor, commands_lengths: List[int],
                      situations_input: torch.Tensor) -> Dict[str, torch.Tensor]:
         encoded_image = self.situation_encoder(situations_input)
-        hidden, encoder_outputs = self.encoder(commands_input, commands_lengths, situation_representation=encoded_image)
+        hidden, encoder_outputs = self.encoder(commands_input, commands_lengths)
         return {"encoded_situations": encoded_image, "encoded_commands": encoder_outputs, "hidden_states": hidden}
 
-    def predict_sequence(self):
-        raise NotImplementedError()
-
     def decode_input(self, target_token: torch.LongTensor, hidden: torch.Tensor, encoder_outputs: torch.Tensor,
-                     input_lengths: List[int]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        output, hidden, attention_weights = self.attention_decoder.forward_step(target_token, hidden,
-                                                                                encoder_outputs, input_lengths)
-        return output, hidden, attention_weights
+                     input_lengths: List[int], encoded_situations: torch.Tensor) -> Tuple[torch.Tensor,
+                                                                                          torch.Tensor, torch.Tensor,
+                                                                                          torch.Tensor]:
+        return self.attention_decoder.forward_step(input_tokens=target_token, last_hidden=hidden,
+                                                   encoded_commands=encoder_outputs, commands_lengths=input_lengths,
+                                                   encoded_situations=encoded_situations)
 
     def decode_input_batched(self, target_batch: torch.LongTensor, target_lengths: List[int],
-                             initial_hidden: torch.Tensor, encoder_outputs: torch.Tensor,
-                             input_lengths: List[int]) -> torch.Tensor:
+                             initial_hidden: torch.Tensor, encoded_commands: torch.Tensor,
+                             command_lengths: List[int], encoded_situations: torch.Tensor) -> torch.Tensor:
         initial_hidden = self.attention_decoder.initialize_hidden(initial_hidden)
-        decoder_output_batched, _ = self.attention_decoder(target_batch, target_lengths, initial_hidden,
-                                                           encoder_outputs, input_lengths)
+        decoder_output_batched, _ = self.attention_decoder(input_tokens=target_batch,
+                                                           input_lengths=target_lengths,
+                                                           init_hidden=initial_hidden,
+                                                           encoded_commands=encoded_commands,
+                                                           commands_lengths=command_lengths,
+                                                           encoded_situations=encoded_situations)
         decoder_output_batched = F.log_softmax(decoder_output_batched, dim=-1)
         return decoder_output_batched
 
@@ -133,7 +135,8 @@ class Model(nn.Module):
                                            situations_input=situations_input)
         decoder_output = self.decode_input_batched(
             target_batch=target_batch, target_lengths=target_lengths, initial_hidden=encoder_output["hidden_states"],
-            encoder_outputs=encoder_output["encoded_commands"]["encoder_outputs"], input_lengths=commands_lengths)
+            encoded_commands=encoder_output["encoded_commands"]["encoder_outputs"], command_lengths=commands_lengths,
+            encoded_situations=encoder_output["encoded_situations"])
         return decoder_output.transpose(0, 1)  # [batch_size, max_target_seq_length, target_vocabulary_size]
 
     def update_state(self, is_best: bool) -> {}:

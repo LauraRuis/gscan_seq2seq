@@ -41,6 +41,9 @@ def print_parameters(model: torch.nn.Module) -> {}:
 def sequence_accuracy(prediction: List[int], target: List[int]) -> float:
     correct = 0
     total = 0
+    if len(prediction) < len(target):
+        difference = len(target) - len(prediction)
+        prediction.extend([0] * difference)
     for i, target_int in enumerate(target):
         if i >= len(prediction):
             break
@@ -48,4 +51,6 @@ def sequence_accuracy(prediction: List[int], target: List[int]) -> float:
         if prediction_int == target_int:
             correct += 1
         total += 1
+    if not total:
+        return 0.
     return (correct / total) * 100

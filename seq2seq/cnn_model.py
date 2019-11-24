@@ -1,43 +1,39 @@
-# TODO: cnn for processing image
 import torch
 import torch.nn as nn
 
 
 class ConvolutionalNet(nn.Module):
-    def __init__(self, image_width: int, num_channels: int, num_conv_channels: int, kernel_size: int,
-                 dropout_probability: float, output_dimension: int, max_pool_kernel_size: int, max_pool_stride: int,
-                 intermediate_hidden_size: int,
-                 num_padding=0, stride=3):
+    """Simple conv. net. Convolves the input channels but retains input image width."""
+    def __init__(self, num_channels: int, num_conv_channels: int, kernel_size: int,
+                 dropout_probability: float, output_dimension: int, stride=1):
         super(ConvolutionalNet, self).__init__()
-        self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=kernel_size,
+        self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=1,
                                 stride=stride)
-        self.conv_2 = nn.Conv2d(in_channels=num_conv_channels, out_channels=num_conv_channels, kernel_size=kernel_size,
-                                stride=stride)
-        self.conv_3 = nn.Conv2d(in_channels=num_conv_channels, out_channels=15, kernel_size=kernel_size,
-                                stride=stride)
+        self.conv_2 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=3,
+                                stride=stride, padding=1)
+        self.conv_3 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=5,
+                                stride=stride, padding=2)
         self.dropout = nn.Dropout2d(dropout_probability)
         self.relu = nn.ReLU()
-        self.max_pool_2d = nn.MaxPool2d(kernel_size=max_pool_kernel_size, stride=max_pool_stride)
-        output_dim = (image_width - kernel_size + 2 * num_padding) / stride + 1
-        dilation = 1
-        second_output_dim = (output_dim - kernel_size + 2 * num_padding) / stride + 1
-        third_output_dim = (second_output_dim - kernel_size + 2 * num_padding) / stride + 1
-        fourth_output_dim = int(
-            (third_output_dim + 2 * num_padding - dilation * (max_pool_stride - 1) - 1) / max_pool_stride + 1)
-        # self.fully_connected_1 = nn.Linear(forth_output_dim * forth_output_dim * 10,
-        #                                    intermediate_hidden_size)
-        # self.fully_connected_2 = nn.Linear(intermediate_hidden_size, output_dimension)
-        layers = [self.conv_1, self.relu, self.dropout, self.conv_2, self.relu, self.dropout, self.conv_3, self.relu,
-                  self.max_pool_2d]
+        layers = [self.relu, self.dropout]
         self.layers = nn.Sequential(*layers)
-        self.output_dimension = fourth_output_dim * fourth_output_dim * 15
+        self.channels_to_output = nn.Linear(num_conv_channels * 3, output_dimension)
+        self.output_dimension = output_dimension
 
     def forward(self, input_images: torch.Tensor) -> torch.Tensor:
+        """
+        :param input_images: [batch_size, image_width, image_width, image_channels]
+        :return: [batch_size, image_width * image_width, output_dim]
+        """
         batch_size = input_images.size(0)
         input_images = input_images.transpose(1, 3)
-        images_features = self.layers(input_images)
-        # images_features = self.dropout(images_features)
-        # images_features = self.fully_connected_1(images_features.view(batch_size, -1))
-        # images_features = self.dropout(images_features)
-        # output_features = self.fully_connected_2(images_features)
-        return images_features.view(batch_size, -1)
+        conved_1 = self.conv_1(input_images)
+        conved_2 = self.conv_2(input_images)
+        conved_3 = self.conv_3(input_images)
+        images_features = self.layers(torch.cat([conved_1, conved_2, conved_3], dim=1))
+        _, num_channels, _, image_dimension = images_features.size()
+        images_features = images_features.transpose(1, 3)
+        images_features = self.channels_to_output(images_features.reshape(batch_size,
+                                                                          image_dimension * image_dimension,
+                                                                          num_channels))
+        return images_features

@@ -34,7 +34,8 @@ def predict_and_save(dataset: GroundedScanDataset, model: nn.Module, output_file
     with open(output_file_path, mode='w') as outfile:
         output = []
         with torch.no_grad():
-            for input_sequence, situation_spec, output_sequence, target_sequence in predict(
+            for (input_sequence, situation_spec, output_sequence, target_sequence, attention_weights_commands,
+                 attention_weights_situations) in predict(
                     dataset.get_data_iterator(batch_size=1), model=model, max_decoding_steps=max_decoding_steps,
                     sos_idx=dataset.target_vocabulary.sos_idx, eos_idx=dataset.target_vocabulary.eos_idx):
                 input_str_sequence = dataset.array_to_sentence(input_sequence[0].tolist(), vocabulary="input")
@@ -43,13 +44,15 @@ def predict_and_save(dataset: GroundedScanDataset, model: nn.Module, output_file
                 target_str_sequence = target_str_sequence[1:-1]  # Get rid of <SOS> and <EOS>
                 output_str_sequence = dataset.array_to_sentence(output_sequence, vocabulary="target")
                 output.append({"input": input_str_sequence, "prediction": output_str_sequence,
-                               "target": target_str_sequence, "situation": situation_spec})
+                               "target": target_str_sequence, "situation": situation_spec,
+                               "attention_weights_input": attention_weights_commands,
+                               "attention_weights_situation": attention_weights_situations})
         json.dump(output, outfile, indent=4)
     return output_file_path
 
 
 def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, sos_idx: int,
-            eos_idx: int, ) -> torch.Tensor:
+            eos_idx: int) -> torch.Tensor:
     """
     TODO
     :param data_iterator:
@@ -67,25 +70,34 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
     for input_sequence, input_lengths, situation, situation_spec, target_sequence, target_lengths in data_iterator:
 
         # Encode the input sequence.
-        encoded_input = model.encode_input(input_sequence, input_lengths, situation)
+        encoded_input = model.encode_input(commands_input=input_sequence,
+                                           commands_lengths=input_lengths,
+                                           situations_input=situation)
 
         # Iteratively decode the output.
         output_sequence = []
         hidden = model.attention_decoder.initialize_hidden(encoded_input["hidden_states"])
         token = torch.tensor([sos_idx], dtype=torch.long, device=device)
         decoding_iteration = 0
+        attention_weights_commands = []
+        attention_weights_situations = []
         while token != eos_idx and decoding_iteration <= max_decoding_steps:
-            output, hidden, attention_weights = model.decode_input(token, hidden,
-                                                                   encoded_input["encoded_commands"]["encoder_outputs"],
-                                                                   input_lengths)
+            output, hidden, attention_weights_command, attention_weights_situation = model.decode_input(
+                target_token=token, hidden=hidden, encoder_outputs=encoded_input["encoded_commands"]["encoder_outputs"],
+                input_lengths=input_lengths, encoded_situations=encoded_input["encoded_situations"])
             output = F.log_softmax(output, dim=-1)
             token = output.max(dim=-1)[1]
             output_sequence.append(token.data[0].item())
+            attention_weights_commands.append(attention_weights_command.tolist())
+            attention_weights_situations.append(attention_weights_situation.tolist())
             decoding_iteration += 1
 
         if output_sequence[-1] == eos_idx:
             output_sequence.pop()
-        yield input_sequence, situation_spec, output_sequence, target_sequence
+            attention_weights_commands.pop()
+            attention_weights_situations.pop()
+        yield (input_sequence, situation_spec, output_sequence, target_sequence, attention_weights_commands,
+               attention_weights_situations)
 
     elapsed_time = time.time() - start_time
     logging.info("Done predicting in {} seconds.".format(elapsed_time))

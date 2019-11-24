@@ -12,7 +12,6 @@ from typing import Tuple
 from seq2seq.helpers import sequence_mask
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 logger = logging.getLogger(__name__)
 
 
@@ -44,12 +43,10 @@ class EncoderRNN(nn.Module):
         self.lstm = nn.LSTM(input_size=rnn_input_size, hidden_size=hidden_size, num_layers=num_layers,
                             dropout=dropout_probability, bidirectional=bidirectional)
 
-    def forward(self, input_batch: torch.LongTensor, input_lengths: List[int],
-                situation_representation: torch.FloatTensor) -> Tuple[torch.Tensor, dict]:
+    def forward(self, input_batch: torch.LongTensor, input_lengths: List[int]) -> Tuple[torch.Tensor, dict]:
         """
         :param input_batch: [batch_size, max_length]; batched padded input sequences
         :param input_lengths: length of each padded input sequence.
-        :param situation_representation: ..TODO
         :return: hidden states for last layer of last time step, the output of the last layer per time step and
         the sequence lengths per example in the batch.
         NB: The hidden states in the bidirectional case represent the final hidden state of each directional encoder,
@@ -59,16 +56,13 @@ class EncoderRNN(nn.Module):
         assert input_batch.size(0) == len(input_lengths), "Wrong amount of lengths passed to .forward()"
         input_embeddings = self.embedding(input_batch)  # [batch_size, max_length, embedding_dim]
         input_embeddings = self.dropout(input_embeddings)  # [batch_size, max_length, embedding_dim]
-        max_length = input_embeddings.size(1)
-        situation_representation = situation_representation.unsqueeze(dim=1).expand((-1, max_length, -1))
-        input_embeddings = torch.cat([input_embeddings, situation_representation], dim=2)
 
         # Sort the sequences by length in descending order.
         batch_size = len(input_lengths)
         max_length = max(input_lengths)
         input_lengths = torch.tensor(input_lengths, device=device, dtype=torch.long)
         input_lengths, perm_idx = torch.sort(input_lengths, descending=True)
-        input_embeddings = input_embeddings[perm_idx]  # TODO: autograd safe?  torch.index_select
+        input_embeddings = input_embeddings.index_select(dim=0, index=perm_idx)
 
         # RNN embedding.
         packed_input = pack_padded_sequence(input_embeddings, input_lengths, batch_first=True)
@@ -89,10 +83,9 @@ class EncoderRNN(nn.Module):
 
         # Reverse the sorting.
         _, unperm_idx = perm_idx.sort(0)
-        hidden = hidden[unperm_idx, :]
-        output_per_timestep = output_per_timestep[:, unperm_idx, :]
+        hidden = hidden.index_select(dim=0, index=unperm_idx)
+        output_per_timestep = output_per_timestep.index_select(dim=1, index=unperm_idx)
         input_lengths = input_lengths[unperm_idx].tolist()
-
         return hidden, {"encoder_outputs": output_per_timestep, "sequence_lengths": input_lengths}
 
     def extra_repr(self) -> str:
@@ -177,14 +170,13 @@ class AttentionDecoderRNN(nn.Module):
         self.dropout = nn.Dropout(dropout_probability)
         self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers=num_layers, dropout=dropout_probability)
         self.attention = Attention()
-        self.hidden_context_to_hidden = nn.Linear(hidden_size * 2, hidden_size)
+        self.hidden_context_to_hidden = nn.Linear(hidden_size * 3, hidden_size)
         self.hidden_to_output = nn.Linear(hidden_size, output_size)
 
     def forward_step(self, input_tokens: torch.LongTensor, last_hidden: Tuple[torch.Tensor, torch.Tensor],
-                     encoder_outputs: torch.Tensor, encoder_lengths: List[int]) -> Tuple[torch.Tensor,
-                                                                                         Tuple[torch.Tensor,
-                                                                                               torch.Tensor],
-                                                                                         torch.Tensor]:
+                     encoded_commands: torch.Tensor, commands_lengths: List[int],
+                     encoded_situations: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor],
+                                                                       torch.Tensor, torch.Tensor]:
         """
         Run batch decoder forward for a single time step.
          Each decoder step considers all of the encoder_outputs through attention.
@@ -193,8 +185,10 @@ class AttentionDecoderRNN(nn.Module):
         :param input_tokens: one time step inputs tokens of length batch_size
         :param last_hidden: previous decoder state, which is pair of tensors [num_layers, batch_size, hidden_size]
         (pair for hidden and cell)
-        :param encoder_outputs: all encoder outputs, [max_input_length, batch_size, embedding_dim]
-        :param encoder_lengths: length of each padded input sequence that were passed to the encoder.
+        :param encoded_commands: all encoder outputs, [max_input_length, batch_size, hidden_size]  # TODO: embedding dim is hidden dim
+        :param commands_lengths: length of each padded input sequence that were passed to the encoder.
+        :param encoded_situations: the situation encoder outputs, [image_dimension * image_dimension, batch_size,
+         hidden_size]
         :return: output : un-normalized output probabilities, [batch_size, output_size]
           hidden : current decoder state, which is a pair of tensors [num_layers, batch_size, hidden_size]
            (pair for hidden and cell)
@@ -209,29 +203,36 @@ class AttentionDecoderRNN(nn.Module):
         lstm_output, hidden = self.lstm(embedded_input, last_hidden)
         # lstm_output: [1, batch_size, hidden_size]
         # hidden: tuple of each [num_layers, batch_size, hidden_size] (pair for hidden and cell)
-        # TODO: check attention over padding locations
-        context, attention_weights = self.attention.forward_masked(lstm_output.transpose(0, 1),
-                                                                   encoder_outputs.transpose(0, 1),
-                                                                   encoder_outputs.transpose(0, 1),
-                                                                   memory_lengths=encoder_lengths)
+        context_command, attention_weights_commands = self.attention.forward_masked(
+            queries=lstm_output.transpose(0, 1), keys=encoded_commands.transpose(0, 1),
+            values=encoded_commands.transpose(0, 1), memory_lengths=commands_lengths)
+        batch_size, image_num_memory, _ = encoded_situations.size()
+        situation_lengths = [image_num_memory for _ in range(batch_size)]
+        context_situation, attention_weights_situations = self.attention.forward_masked(
+            queries=lstm_output.transpose(0, 1), keys=encoded_situations,
+            values=encoded_situations, memory_lengths=situation_lengths)
         # context : [batch_size, 1, hidden_size]
         # attention_weights : [batch_size, 1, max_input_length]
 
         # Concatenate the context vector and RNN hidden state, and map to an output
         lstm_output = lstm_output.squeeze(0)  # [batch_size, hidden_size]
-        context = context.squeeze(1)  # [batch_size, hidden_size]
-        attention_weights = attention_weights.squeeze(1)  # [batch_size, max_input_length]
-        concat_input = torch.cat([lstm_output, context], dim=1)  # [batch_size, hidden_size*2]
+        context_command = context_command.squeeze(1)  # [batch_size, hidden_size]
+        context_situation = context_situation.squeeze(1)  # [batch_size, hidden_size]
+        attention_weights_commands = attention_weights_commands.squeeze(1)  # [batch_size, max_input_length]
+        attention_weights_situations = attention_weights_situations.squeeze(1)  # [batch_size, im_dim * im_dim]
+        concat_input = torch.cat([lstm_output,
+                                  context_command,
+                                  context_situation], dim=1)  # [batch_size, hidden_size*3]
         concat_output = self.tanh(self.hidden_context_to_hidden(concat_input))  # [batch_size, hidden_size]
         output = self.hidden_to_output(concat_output)  # [batch_size, output_size]
-        return output, hidden, attention_weights
+        return output, hidden, attention_weights_commands, attention_weights_situations
         # output : [un-normalized probabilities] [batch_size, output_size]
         # hidden: tuple of size [num_layers, batch_size, hidden_size] (for hidden and cell)
         # attention_weights: [batch_size, max_input_length]
 
     def forward(self, input_tokens: torch.LongTensor, input_lengths: List[int],
-                init_hidden: Tuple[torch.Tensor, torch.Tensor], encoder_outputs: torch.Tensor,
-                encoder_lengths: List[int]):
+                init_hidden: Tuple[torch.Tensor, torch.Tensor], encoded_commands: torch.Tensor,
+                commands_lengths: List[int], encoded_situations: torch.Tensor):
         """
         Run batch attention decoder forward for a series of steps
          Each decoder step considers all of the encoder_outputs through attention.
@@ -240,8 +241,9 @@ class AttentionDecoderRNN(nn.Module):
         :param input_tokens: [batch_size, max_length];  padded target sequences
         :param input_lengths: [batch_size] for sequence length of each padded target sequence
         :param init_hidden: tuple of tensors [num_layers, batch_size, hidden_size] (for hidden and cell)
-        :param encoder_outputs: [max_input_length, batch_size, embedding_dim]
-        :param encoder_lengths: [batch_size] sequence length of each encoder sequence (without padding)
+        :param encoded_commands: [max_input_length, batch_size, embedding_dim]
+        :param commands_lengths: [batch_size] sequence length of each encoder sequence (without padding)
+        :param encoded_situations: [] TODO
         :return: output : unnormalized log-score, [max_length, batch_size, output_size]
           hidden : current decoder state, tuple with each [num_layers, batch_size, hidden_size] (for hidden and cell)
         """
@@ -251,9 +253,10 @@ class AttentionDecoderRNN(nn.Module):
         # Sort the sequences by length in descending order
         input_lengths = torch.tensor(input_lengths, dtype=torch.long, device=device)
         input_lengths, perm_idx = torch.sort(input_lengths, descending=True)
-        input_embedded = input_embedded[perm_idx]
+        input_embedded = input_embedded.index_select(dim=0, index=perm_idx)
         initial_h, initial_c = init_hidden
-        init_hidden = (initial_h[:, perm_idx, :], initial_c[:, perm_idx, :])
+        init_hidden = (initial_h.index_select(dim=1, index=perm_idx),
+                       initial_c.index_select(dim=1, index=perm_idx))
 
         # RNN decoder
         packed_input = pack_padded_sequence(input_embedded, input_lengths, batch_first=True)
@@ -263,19 +266,28 @@ class AttentionDecoderRNN(nn.Module):
 
         # Reverse the sorting
         _, unperm_idx = perm_idx.sort(0)
-        lstm_output = lstm_output[:, unperm_idx, :]  # [max_length, batch_size, hidden_size]
+        lstm_output = lstm_output.index_select(dim=1, index=unperm_idx)  # [max_length, batch_size, hidden_size]
         seq_len = input_lengths[unperm_idx].tolist()
 
-        # Compute context vector using attention  TODO: ask why attention after lstm instead of before
-        context, attention_weights = self.attention.forward_masked(lstm_output.transpose(0, 1),
-                                                                   encoder_outputs.transpose(0, 1),
-                                                                   encoder_outputs.transpose(0, 1),
-                                                                   memory_lengths=encoder_lengths)
+        # Compute context vector using attention
+        context_commands, attention_weights = self.attention.forward_masked(queries=lstm_output.transpose(0, 1),
+                                                                            keys=encoded_commands.transpose(0, 1),
+                                                                            values=encoded_commands.transpose(0, 1),
+                                                                            memory_lengths=commands_lengths)
+        # Compute context vector using attention
+        batch_size, image_num_memory, _ = encoded_situations.size()
+        situation_lengths = [image_num_memory for _ in range(batch_size)]
+        context_situation, attention_weights = self.attention.forward_masked(queries=lstm_output.transpose(0, 1),
+                                                                             keys=encoded_situations,
+                                                                             values=encoded_situations,
+                                                                             memory_lengths=situation_lengths)
         # context: [batch_size, max_length, hidden_size]
         # attention_weights: [batch_size, max_length, max_input_length]
 
         # Concatenate the context vector and RNN hidden state, and map to an output
-        concat_input = torch.cat([lstm_output, context.transpose(0, 1)], 2)  # [max_length, batch_size, hidden_size*2]
+        concat_input = torch.cat([lstm_output,
+                                  context_commands.transpose(0, 1),
+                                  context_situation.transpose(0, 1)], 2)  # [max_length, batch_size, hidden_size*2]
         concat_output = self.tanh(self.hidden_context_to_hidden(concat_input))  # [max_length, batch_size, hidden_size]
         output = self.hidden_to_output(concat_output)  # [max_length, batch_size, output_size]
         return output, seq_len

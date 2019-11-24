@@ -1,5 +1,6 @@
 import os
 from typing import List
+from typing import Tuple
 import logging
 from collections import defaultdict
 from collections import Counter
@@ -19,19 +20,17 @@ class Vocabulary(object):
     Object that maps words in string form to indices to be processed by numerical models.
     """
 
-    def __init__(self, unk_token="<UNK>", sos_token="<SOS>", eos_token="<EOS>", pad_token="<PAD>"):
+    def __init__(self, sos_token="<SOS>", eos_token="<EOS>", pad_token="<PAD>"):
         """
-        NB: that unknown words will map to <UNK>. <PAD> token is by construction idx 0.
+        NB: <PAD> token is by construction idx 0.
         """
-        self.unk_token = unk_token
         self.sos_token = sos_token
         self.eos_token = eos_token
         self.pad_token = pad_token
-        self._idx_to_word = [pad_token, unk_token, sos_token, eos_token]
-        self._word_to_idx = defaultdict(lambda: self._idx_to_word.index(self.unk_token))
-        self._word_to_idx[unk_token] = 1
-        self._word_to_idx[sos_token] = 2
-        self._word_to_idx[eos_token] = 3
+        self._idx_to_word = [pad_token, sos_token, eos_token]
+        self._word_to_idx = defaultdict(lambda: self._idx_to_word.index(self.pad_token))
+        self._word_to_idx[sos_token] = 1
+        self._word_to_idx[eos_token] = 2
         self._word_frequencies = Counter()
 
     def word_to_idx(self, word: str) -> int:
@@ -71,11 +70,10 @@ class Vocabulary(object):
         assert os.path.exists(path), "Trying to load a vocabulary from a non-existing file {}".format(path)
         with open(path, 'r') as infile:
             all_data = json.load(infile)
-            unk_token = all_data["unk_token"]
             sos_token = all_data["sos_token"]
             eos_token = all_data["eos_token"]
             pad_token = all_data["pad_token"]
-            vocab = cls(unk_token=unk_token, sos_token=sos_token, eos_token=eos_token, pad_token=pad_token)
+            vocab = cls(sos_token=sos_token, eos_token=eos_token, pad_token=pad_token)
             vocab._idx_to_word = all_data["idx_to_word"]
             vocab._word_to_idx = defaultdict(int)
             for word, idx in all_data["word_to_idx"].items():
@@ -85,7 +83,6 @@ class Vocabulary(object):
 
     def to_dict(self) -> dict:
         return {
-            "unk_token": self.unk_token,
             "sos_token": self.sos_token,
             "eos_token": self.eos_token,
             "pad_token": self.pad_token,
@@ -102,7 +99,7 @@ class Vocabulary(object):
 
 class GroundedScanDataset(object):
     """
-    Loads a
+    Loads a GroundedScan instance from a specified location.
     """
 
     def __init__(self, path_to_data: str, save_directory: str, split="train", input_vocabulary_file="",
@@ -116,7 +113,10 @@ class GroundedScanDataset(object):
             logger.warning("WARNING: generating a vocabulary from the test set.")
         self.dataset = GroundedScan.load_dataset_from_file(path_to_data, save_directory=save_directory)
         self.image_dimensions = self.dataset.situation_image_dimension
+        self.image_channels = 3
         self.split = split
+
+        # Keeping track of data.
         self._examples = np.array([])
         self._input_lengths = np.array([])
         self._target_lengths = np.array([])
@@ -125,15 +125,16 @@ class GroundedScanDataset(object):
             self.input_vocabulary = Vocabulary()
             self.target_vocabulary = Vocabulary()
             self.read_vocabularies()
+            logger.info("Done generating vocabularies.")
         else:
             logger.info("Loading vocabularies...")
             self.input_vocabulary = Vocabulary.load(input_vocabulary_file)
             self.target_vocabulary = Vocabulary.load(target_vocabulary_file)
+            logger.info("Done loading vocabularies.")
 
-    def read_vocabularies(self):
+    def read_vocabularies(self) -> {}:
         """
-        TODO
-        :return:
+        Loop over all examples in the dataset and add the words in them to the vocabularies.
         """
         logger.info("Populating vocabulary...")
         for i, example in enumerate(self.dataset.get_examples_with_image(self.split)):
@@ -155,25 +156,22 @@ class GroundedScanDataset(object):
 
     def shuffle_data(self) -> {}:
         """
-        TODO
-        :return:
+        Reorder the data examples and reorder the lengths of the input and target commands accordingly.
         """
         random_permutation = np.random.permutation(len(self._examples))
         self._examples = self._examples[random_permutation]
         self._target_lengths = self._target_lengths[random_permutation]
         self._input_lengths = self._input_lengths[random_permutation]
 
-    @property
-    def num_examples(self):
-        return len(self._examples)
-
-    def get_data_iterator(self, batch_size=10):
+    def get_data_iterator(self, batch_size=10) -> Tuple[torch.Tensor, List[int],
+                                                        torch.Tensor, List[dict],
+                                                        torch.Tensor, List[int]]:
         """
-        TODO
-        :param batch_size:
-        :return:
+        Iterate over batches of example tensors, pad them to the max length in the batch and yield.
+        :param batch_size: how many examples to put in each batch.
+        :return: tuple of input commands batch, corresponding input lengths, situation image batch,
+        list of corresponding situation representations, target commands batch and corresponding target lengths.
         """
-
         for example_i in range(0, len(self._examples) - batch_size, batch_size):
             examples = self._examples[example_i:example_i + batch_size]
             input_lengths = self._input_lengths[example_i:example_i + batch_size]
@@ -200,14 +198,16 @@ class GroundedScanDataset(object):
             yield (torch.cat(input_batch, dim=0), input_lengths, torch.cat(situation_batch, dim=0),
                    situation_representation_batch, torch.cat(target_batch, dim=0), target_lengths)
 
-    def read_dataset(self, max_examples=None) -> {}:
+    def read_dataset(self, max_examples=None, simple_situation_representation=True) -> {}:
         """
-        TODO
-        :param max_examples:
-        :return:
+        Loop over the data examples in GroundedScan and convert them to tensors, also save the lengths
+        for input and target sequences that are needed for padding.
+        :param max_examples: how many examples to read maximally, read all if None.
+        :param simple_situation_representation: whether to read the full situation image in RGB or the simplified
+        smaller representation.
         """
         logger.info("Converting dataset to tensors...")
-        for example in self.dataset.get_examples_with_image(self.split):
+        for i, example in enumerate(self.dataset.get_examples_with_image(self.split, simple_situation_representation)):
             if max_examples:
                 if len(self._examples) > max_examples:
                     return
@@ -215,6 +215,9 @@ class GroundedScanDataset(object):
             input_commands = example["input_command"]
             target_commands = example["target_command"]
             situation_image = example["situation_image"]
+            if i == 0:
+                self.image_dimensions = situation_image.shape[0]
+                self.image_channels = situation_image.shape[-1]
             situation_repr = example["situation_representation"]
             input_array = self.sentence_to_array(input_commands, vocabulary="input")
             target_array = self.sentence_to_array(target_commands, vocabulary="target")
@@ -231,10 +234,11 @@ class GroundedScanDataset(object):
 
     def sentence_to_array(self, sentence: List[str], vocabulary: str) -> List[int]:
         """
-        TODO
-        :param sentence:
-        :param vocabulary:
-        :return:
+        Convert each string word in a sentence to the corresponding integer from the vocabulary and append
+        a start-of-sequence and end-of-sequence token.
+        :param sentence: the sentence in words (strings)
+        :param vocabulary: whether to use the input or target vocabulary.
+        :return: the sentence in integers.
         """
         vocab = self.get_vocabulary(vocabulary)
         sentence_array = [vocab.sos_idx]
@@ -245,13 +249,17 @@ class GroundedScanDataset(object):
 
     def array_to_sentence(self, sentence_array: List[int], vocabulary: str) -> List[str]:
         """
-        TODO
-        :param sentence_array:
-        :param vocabulary:
-        :return:
+        Translate each integer in a sentence array to the corresponding word.
+        :param sentence_array: array with integers representing words from the vocabulary.
+        :param vocabulary: whether to use the input or target vocabulary.
+        :return: the sentence in words.
         """
         vocab = self.get_vocabulary(vocabulary)
         return [vocab.idx_to_word(word_idx) for word_idx in sentence_array]
+
+    @property
+    def num_examples(self):
+        return len(self._examples)
 
     @property
     def input_vocabulary_size(self):

@@ -107,7 +107,8 @@ class GroundedScanDataset(object):
         assert os.path.exists(path_to_data), "Trying to read a gSCAN dataset from a non-existing file {}.".format(
             path_to_data)
         if not generate_vocabulary:
-            assert os.path.exists(input_vocabulary_file) and os.path.exists(target_vocabulary_file), \
+            assert os.path.exists(os.path.join(save_directory, input_vocabulary_file)) and os.path.exists(
+                os.path.join(save_directory, target_vocabulary_file)), \
                 "Trying to load vocabularies from non-existing files."
         if split == "test" and generate_vocabulary:
             logger.warning("WARNING: generating a vocabulary from the test set.")
@@ -115,6 +116,7 @@ class GroundedScanDataset(object):
         self.image_dimensions = self.dataset.situation_image_dimension
         self.image_channels = 3
         self.split = split
+        self.directory = save_directory
 
         # Keeping track of data.
         self._examples = np.array([])
@@ -128,8 +130,8 @@ class GroundedScanDataset(object):
             logger.info("Done generating vocabularies.")
         else:
             logger.info("Loading vocabularies...")
-            self.input_vocabulary = Vocabulary.load(input_vocabulary_file)
-            self.target_vocabulary = Vocabulary.load(target_vocabulary_file)
+            self.input_vocabulary = Vocabulary.load(os.path.join(save_directory, input_vocabulary_file))
+            self.target_vocabulary = Vocabulary.load(os.path.join(save_directory, target_vocabulary_file))
             logger.info("Done loading vocabularies.")
 
     def read_vocabularies(self) -> {}:
@@ -142,8 +144,8 @@ class GroundedScanDataset(object):
             self.target_vocabulary.add_sentence(example["target_command"])
 
     def save_vocabularies(self, input_vocabulary_file: str, target_vocabulary_file: str):
-        self.input_vocabulary.save(input_vocabulary_file)
-        self.target_vocabulary.save(target_vocabulary_file)
+        self.input_vocabulary.save(os.path.join(self.directory, input_vocabulary_file))
+        self.target_vocabulary.save(os.path.join(self.directory, target_vocabulary_file))
 
     def get_vocabulary(self, vocabulary: str) -> Vocabulary:
         if vocabulary == "input":
@@ -182,6 +184,7 @@ class GroundedScanDataset(object):
             target_batch = []
             situation_batch = []
             situation_representation_batch = []
+            derivation_representation_batch = []
             for example in examples:
                 to_pad_input = max_input_length - example["input_tensor"].size(1)
                 to_pad_target = max_target_length - example["target_tensor"].size(1)
@@ -195,8 +198,10 @@ class GroundedScanDataset(object):
                 target_batch.append(padded_target)
                 situation_batch.append(example["situation_tensor"])
                 situation_representation_batch.append(example["situation_representation"])
-            yield (torch.cat(input_batch, dim=0), input_lengths, torch.cat(situation_batch, dim=0),
-                   situation_representation_batch, torch.cat(target_batch, dim=0), target_lengths)
+                derivation_representation_batch.append(example["derivation_representation"])
+            yield (torch.cat(input_batch, dim=0), input_lengths, derivation_representation_batch,
+                   torch.cat(situation_batch, dim=0), situation_representation_batch, torch.cat(target_batch, dim=0),
+                   target_lengths)
 
     def read_dataset(self, max_examples=None, simple_situation_representation=True) -> {}:
         """
@@ -228,6 +233,7 @@ class GroundedScanDataset(object):
             empty_example["situation_tensor"] = torch.tensor(situation_image, dtype=torch.float, device=device
                                                              ).unsqueeze(dim=0)
             empty_example["situation_representation"] = situation_repr
+            empty_example["derivation_representation"] = example["derivation_representation"]
             self._input_lengths = np.append(self._input_lengths, [len(input_array)])
             self._target_lengths = np.append(self._target_lengths, [len(target_array)])
             self._examples = np.append(self._examples, [empty_example])

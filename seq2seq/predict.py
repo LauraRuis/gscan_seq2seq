@@ -6,6 +6,7 @@ from typing import Iterator
 import time
 import json
 
+from seq2seq.helpers import sequence_accuracy
 from seq2seq.gSCAN_dataset import GroundedScanDataset
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,30 +35,36 @@ def predict_and_save(dataset: GroundedScanDataset, model: nn.Module, output_file
     with open(output_file_path, mode='w') as outfile:
         output = []
         with torch.no_grad():
-            for (input_sequence, situation_spec, output_sequence, target_sequence, attention_weights_commands,
-                 attention_weights_situations) in predict(
+            for (input_sequence, derivation_spec, situation_spec, output_sequence, target_sequence,
+                 attention_weights_commands, attention_weights_situations) in predict(
                     dataset.get_data_iterator(batch_size=1), model=model, max_decoding_steps=max_decoding_steps,
-                    sos_idx=dataset.target_vocabulary.sos_idx, eos_idx=dataset.target_vocabulary.eos_idx):
+                    pad_idx=dataset.target_vocabulary.pad_idx, sos_idx=dataset.target_vocabulary.sos_idx,
+                    eos_idx=dataset.target_vocabulary.eos_idx):
+                accuracy = sequence_accuracy(output_sequence, target_sequence[0].tolist()[1:-1])
                 input_str_sequence = dataset.array_to_sentence(input_sequence[0].tolist(), vocabulary="input")
                 input_str_sequence = input_str_sequence[1:-1]  # Get rid of <SOS> and <EOS>
                 target_str_sequence = dataset.array_to_sentence(target_sequence[0].tolist(), vocabulary="target")
                 target_str_sequence = target_str_sequence[1:-1]  # Get rid of <SOS> and <EOS>
                 output_str_sequence = dataset.array_to_sentence(output_sequence, vocabulary="target")
                 output.append({"input": input_str_sequence, "prediction": output_str_sequence,
+                               "derivation": derivation_spec,
                                "target": target_str_sequence, "situation": situation_spec,
                                "attention_weights_input": attention_weights_commands,
-                               "attention_weights_situation": attention_weights_situations})
+                               "attention_weights_situation": attention_weights_situations,
+                               "accuracy": accuracy,
+                               "exact_match": True if accuracy == 100 else False})
         json.dump(output, outfile, indent=4)
     return output_file_path
 
 
-def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, sos_idx: int,
+def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, pad_idx: int, sos_idx: int,
             eos_idx: int) -> torch.Tensor:
     """
     TODO
     :param data_iterator:
     :param model:
     :param max_decoding_steps:
+    :param pad_idx:
     :param sos_idx:
     :param eos_idx:
     :return:
@@ -67,7 +74,8 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
     start_time = time.time()
 
     # Loop over the data.
-    for input_sequence, input_lengths, situation, situation_spec, target_sequence, target_lengths in data_iterator:
+    for (input_sequence, input_lengths, derivation_spec, situation, situation_spec, target_sequence,
+         target_lengths) in data_iterator:
 
         # Encode the input sequence.
         encoded_input = model.encode_input(commands_input=input_sequence,
@@ -96,8 +104,8 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
             output_sequence.pop()
             attention_weights_commands.pop()
             attention_weights_situations.pop()
-        yield (input_sequence, situation_spec, output_sequence, target_sequence, attention_weights_commands,
-               attention_weights_situations)
+        yield (input_sequence, derivation_spec, situation_spec, output_sequence, target_sequence,
+               attention_weights_commands, attention_weights_situations)
 
     elapsed_time = time.time() - start_time
     logging.info("Done predicting in {} seconds.".format(elapsed_time))

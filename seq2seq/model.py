@@ -60,6 +60,8 @@ class Model(nn.Module):
         self.output_directory = output_directory
         self.trained_iterations = 0
         self.best_iteration = 0
+        self.best_exact_match = 0
+        self.best_accuracy = 0
 
     @staticmethod
     def remove_start_of_sequence(input_tensor: torch.Tensor) -> torch.Tensor:
@@ -139,18 +141,21 @@ class Model(nn.Module):
             encoded_situations=encoder_output["encoded_situations"])
         return decoder_output.transpose(0, 1)  # [batch_size, max_target_seq_length, target_vocabulary_size]
 
-    def update_state(self, is_best: bool) -> {}:
+    def update_state(self, is_best: bool, accuracy=None, exact_match=None) -> {}:
         # TODO: also save best loss and load
         self.trained_iterations += 1
         if is_best:
+            self.best_exact_match = exact_match
+            self.best_accuracy = accuracy
             self.best_iteration = self.trained_iterations
 
     def load_model(self, path_to_checkpoint: str) -> dict:
-        # TODO: also save best loss and load
         checkpoint = torch.load(path_to_checkpoint)
         self.trained_iterations = checkpoint["iteration"]
         self.best_iteration = checkpoint["best_iteration"]
         self.load_state_dict(checkpoint["state_dict"])
+        self.best_exact_match = checkpoint["best_exact_match"]
+        self.best_accuracy = checkpoint["best_accuracy"]
         return checkpoint["optimizer_state_dict"]
 
     def get_current_state(self):
@@ -158,7 +163,9 @@ class Model(nn.Module):
         return {
             "iteration": self.trained_iterations,
             "state_dict": self.state_dict(),
-            "best_iteration": self.best_iteration
+            "best_iteration": self.best_iteration,
+            "best_accuracy": self.best_accuracy,
+            "best_exact_match": self.best_exact_match
         }
 
     def save_checkpoint(self, file_name: str, is_best: bool, optimizer_state_dict: dict) -> str:

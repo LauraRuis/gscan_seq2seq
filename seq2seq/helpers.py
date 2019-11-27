@@ -1,6 +1,9 @@
 import torch
 import numpy as np
 from typing import List
+import logging
+
+logger = logging.getLogger(__name__)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -29,21 +32,26 @@ def sequence_mask(sequence_lengths: torch.LongTensor, max_len=None) -> torch.ten
     return sequence_range_expand < seq_length_expand
 
 
-def print_parameters(model: torch.nn.Module) -> {}:
+def log_parameters(model: torch.nn.Module) -> {}:
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     n_params = sum([np.prod(p.size()) for p in model_parameters])
-    print("Total parameters: %d" % n_params)
+    logger.info("Total parameters: %d" % n_params)
     for name, p in model.named_parameters():
         if p.requires_grad:
-            print("%s : %s" % (name, list(p.size())))
+            logger.info("%s : %s" % (name, list(p.size())))
 
 
 def sequence_accuracy(prediction: List[int], target: List[int]) -> float:
     correct = 0
     total = 0
+    prediction = prediction.copy()
+    target = target.copy()
     if len(prediction) < len(target):
         difference = len(target) - len(prediction)
         prediction.extend([0] * difference)
+    if len(target) < len(prediction):
+        difference = len(prediction) - len(target)
+        target.extend([-1] * difference)
     for i, target_int in enumerate(target):
         if i >= len(prediction):
             break

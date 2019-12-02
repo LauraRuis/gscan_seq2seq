@@ -1,5 +1,6 @@
 # TODO: visualize training attention weights
 # TODO: visualize training loss
+# TODO: look into attention over full image
 
 import logging
 import torch
@@ -19,10 +20,12 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
           target_vocab_path: str, embedding_dimension: int, num_encoder_layers: int, encoder_dropout_p: float,
           encoder_bidirectional: bool, training_batch_size: int, test_batch_size: int, max_decoding_steps: int,
           num_decoder_layers: int, decoder_dropout_p: float, cnn_kernel_size: int, cnn_dropout_p: float,
-          cnn_hidden_num_channels: int, simple_situation_representation: bool,
+          cnn_hidden_num_channels: int, simple_situation_representation: bool, decoder_hidden_size: int,
           encoder_hidden_size: int, learning_rate: float, adam_beta_1: float, adam_beta_2: float, lr_decay: float,
           lr_decay_steps: int, resume_from_file: str, max_training_iterations: int, output_directory: str,
-          print_every: int, evaluate_every: int, max_training_examples=None, seed=42, **kwargs):
+          print_every: int, evaluate_every: int, conditional_attention: bool, auxiliary_task: bool,
+          max_training_examples=None, seed=42,
+          **kwargs):
     device = torch.device(type='cuda') if use_cuda else torch.device(type='cpu')
     cfg = locals().copy()
 
@@ -90,14 +93,20 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
         # Shuffle the dataset and loop over it.
         training_set.shuffle_data()
         for (input_batch, input_lengths, _, situation_batch, _, target_batch,
-             target_lengths) in training_set.get_data_iterator(
+             target_lengths, agent_positions, target_positions) in training_set.get_data_iterator(
                 batch_size=training_batch_size):
             is_best = False
             model.train()
-            target_scores = model(commands_input=input_batch, commands_lengths=input_lengths,
-                                  situations_input=situation_batch, target_batch=target_batch,
-                                  target_lengths=target_lengths)
+            target_scores, agent_position_scores, target_position_scores = model(commands_input=input_batch,
+                                                                                 commands_lengths=input_lengths,
+                                                                                 situations_input=situation_batch,
+                                                                                 target_batch=target_batch,
+                                                                                 target_lengths=target_lengths)
             loss = model.get_loss(target_scores, target_batch)
+            if auxiliary_task:
+                auxiliary_loss = model.get_auxiliary_loss(agent_position_scores, target_position_scores,
+                                                          agent_positions, target_positions)
+                loss += auxiliary_loss
             loss.backward()
             optimizer.step()
             scheduler.step()

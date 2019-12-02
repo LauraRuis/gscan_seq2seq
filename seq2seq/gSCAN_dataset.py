@@ -165,12 +165,13 @@ class GroundedScanDataset(object):
         self._target_lengths = self._target_lengths[random_permutation]
         self._input_lengths = self._input_lengths[random_permutation]
 
-    def get_data_iterator(self, batch_size=10) -> Tuple[torch.Tensor, List[int],
-                                                        torch.Tensor, List[dict],
-                                                        torch.Tensor, List[int]]:
+    def get_data_iterator(self, batch_size=10) -> Tuple[torch.Tensor, List[int], torch.Tensor, List[dict],
+                                                        torch.Tensor, List[int], torch.Tensor, torch.Tensor]:
         """
         Iterate over batches of example tensors, pad them to the max length in the batch and yield.
         :param batch_size: how many examples to put in each batch.
+        :param auxiliary_task: if true, also batches agent and target positions (flattened, so
+        agent row * agent columns = agent_position)
         :return: tuple of input commands batch, corresponding input lengths, situation image batch,
         list of corresponding situation representations, target commands batch and corresponding target lengths.
         """
@@ -185,6 +186,8 @@ class GroundedScanDataset(object):
             situation_batch = []
             situation_representation_batch = []
             derivation_representation_batch = []
+            agent_positions_batch = []
+            target_positions_batch = []
             for example in examples:
                 to_pad_input = max_input_length - example["input_tensor"].size(1)
                 to_pad_target = max_target_length - example["target_tensor"].size(1)
@@ -199,9 +202,12 @@ class GroundedScanDataset(object):
                 situation_batch.append(example["situation_tensor"])
                 situation_representation_batch.append(example["situation_representation"])
                 derivation_representation_batch.append(example["derivation_representation"])
+                agent_positions_batch.append(example["agent_position"])
+                target_positions_batch.append(example["target_position"])
+
             yield (torch.cat(input_batch, dim=0), input_lengths, derivation_representation_batch,
                    torch.cat(situation_batch, dim=0), situation_representation_batch, torch.cat(target_batch, dim=0),
-                   target_lengths)
+                   target_lengths, torch.cat(agent_positions_batch, dim=0), torch.cat(target_positions_batch, dim=0))
 
     def read_dataset(self, max_examples=None, simple_situation_representation=True) -> {}:
         """
@@ -234,6 +240,14 @@ class GroundedScanDataset(object):
                                                              ).unsqueeze(dim=0)
             empty_example["situation_representation"] = situation_repr
             empty_example["derivation_representation"] = example["derivation_representation"]
+            empty_example["agent_position"] = torch.tensor(
+                (int(situation_repr["agent_position"]["row"]) * int(situation_repr["grid_size"])) +
+                int(situation_repr["agent_position"]["column"]), dtype=torch.long,
+                device=device).unsqueeze(dim=0)
+            empty_example["target_position"] = torch.tensor(
+                (int(situation_repr["target_object"]["position"]["row"]) * int(situation_repr["grid_size"])) +
+                int(situation_repr["target_object"]["position"]["column"]),
+                dtype=torch.long, device=device).unsqueeze(dim=0)
             self._input_lengths = np.append(self._input_lengths, [len(input_array)])
             self._target_lengths = np.append(self._target_lengths, [len(target_array)])
             self._examples = np.append(self._examples, [empty_example])

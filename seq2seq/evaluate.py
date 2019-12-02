@@ -3,11 +3,12 @@ from seq2seq.helpers import sequence_accuracy
 
 import torch.nn as nn
 from typing import Iterator
+from typing import Tuple
 import numpy as np
 
 
 def evaluate(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, pad_idx: int, sos_idx: int,
-             eos_idx: int) -> float:
+             eos_idx: int) -> Tuple[float, float]:
     accuracies = []
     exact_match = 0
     for input_sequence, _, _, output_sequence, target_sequence, _, _ in predict(data_iterator=data_iterator,

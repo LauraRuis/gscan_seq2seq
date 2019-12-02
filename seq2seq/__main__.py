@@ -2,8 +2,8 @@
 # TODO: visualize attention weights input command
 # TODO: conditional attention
 # TODO: check whether conv with filter size equal to grid size is necessary for performance
-# TODO: learning rate schedule and stuff
-
+# TODO: consider beam search
+# TODO: aux. task to predict target location from situation repr.
 import argparse
 import logging
 import os
@@ -55,7 +55,7 @@ def main():
 
     # Testing and predicting arguments
     parser.add_argument("--max_testing_examples", type=int, default=None)
-    parser.add_argument("--max_decoding_steps", type=int, default=25)
+    parser.add_argument("--max_decoding_steps", type=int, default=40)
     parser.add_argument("--output_file_name", type=str, default="predict.json")
 
     # Situation Encoder arguments
@@ -66,11 +66,13 @@ def main():
     parser.add_argument("--cnn_hidden_num_channels", type=int, default=100)
     parser.add_argument("--cnn_kernel_size", type=int, default=1)
     parser.add_argument("--cnn_dropout_p", type=float, default=0.3)
+    parser.add_argument("--auxiliary_task", dest="auxiliary_task", default=True, action="store_true")
+    parser.add_argument("--no_auxiliary_task", dest="auxiliary_task", default=False, action="store_false")
 
     # Command Encoder arguments
-    parser.add_argument("--embedding_dimension", type=int, default=50)
-    parser.add_argument("--num_encoder_layers", type=int, default=2)
-    parser.add_argument("--encoder_hidden_size", type=int, default=200)
+    parser.add_argument("--embedding_dimension", type=int, default=25)
+    parser.add_argument("--num_encoder_layers", type=int, default=1)
+    parser.add_argument("--encoder_hidden_size", type=int, default=100)
     parser.add_argument("--encoder_dropout_p", type=float, default=0.3)
     parser.add_argument("--encoder_bidirectional", dest="encoder_bidirectional", default=True, action="store_true")
     parser.add_argument("--encoder_unidirectional", dest="encoder_bidirectional", default=False, action="store_false")
@@ -78,6 +80,9 @@ def main():
     # Decoder arguments
     parser.add_argument("--num_decoder_layers", type=int, default=1)
     parser.add_argument("--decoder_dropout_p", type=float, default=0.3)
+    parser.add_argument("--decoder_hidden_size", type=int, default=100)
+    parser.add_argument("--conditional_attention", dest="conditional_attention", default=True, action="store_true")
+    parser.add_argument("--no_conditional_attention", dest="conditional_attention", default=False, action="store_false")
 
     # Other arguments
     parser.add_argument("--seed", type=int, default=42)

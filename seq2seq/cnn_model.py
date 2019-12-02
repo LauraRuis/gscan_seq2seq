@@ -4,8 +4,8 @@ import torch.nn as nn
 
 class ConvolutionalNet(nn.Module):
     """Simple conv. net. Convolves the input channels but retains input image width."""
-    def __init__(self, num_channels: int, num_conv_channels: int, kernel_size: int,
-                 dropout_probability: float, output_dimension: int, stride=1):
+    def __init__(self, num_channels: int, num_conv_channels: int, kernel_size: int, dropout_probability: float,
+                 stride=1):
         super(ConvolutionalNet, self).__init__()
         self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=1,
                                 stride=stride)
@@ -17,13 +17,12 @@ class ConvolutionalNet(nn.Module):
         self.relu = nn.ReLU()
         layers = [self.relu, self.dropout]
         self.layers = nn.Sequential(*layers)
-        self.channels_to_output = nn.Linear(num_conv_channels * 3, output_dimension)
-        self.output_dimension = output_dimension
+        self.output_dimension = num_conv_channels * 3
 
     def forward(self, input_images: torch.Tensor) -> torch.Tensor:
         """
         :param input_images: [batch_size, image_width, image_width, image_channels]
-        :return: [batch_size, image_width * image_width, output_dim]
+        :return: [batch_size, image_width * image_width, num_conv_channels]
         """
         batch_size = input_images.size(0)
         input_images = input_images.transpose(1, 3)
@@ -33,7 +32,37 @@ class ConvolutionalNet(nn.Module):
         images_features = self.layers(torch.cat([conved_1, conved_2, conved_3], dim=1))
         _, num_channels, _, image_dimension = images_features.size()
         images_features = images_features.transpose(1, 3)
-        images_features = self.channels_to_output(images_features.reshape(batch_size,
-                                                                          image_dimension * image_dimension,
-                                                                          num_channels))
-        return images_features
+        return images_features.reshape(batch_size, image_dimension * image_dimension, num_channels)
+
+
+class DownSamplingConvolutionalNet(nn.Module):
+    """TODO: make more general and describe"""
+    def __init__(self, num_channels: int, num_conv_channels: int, dropout_probability: float):
+        super(DownSamplingConvolutionalNet, self).__init__()
+        self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=5,
+                                stride=5)
+        self.conv_2 = nn.Conv2d(in_channels=num_conv_channels, out_channels=num_conv_channels, kernel_size=3,
+                                stride=3, padding=0)
+        self.conv_3 = nn.Conv2d(in_channels=num_conv_channels, out_channels=num_conv_channels, kernel_size=3,
+                                stride=3, padding=1)
+        self.dropout = nn.Dropout2d(dropout_probability)
+        self.relu = nn.ReLU()
+        layers = [self.conv_1, self.relu, self.dropout, self.conv_2, self.relu, self.dropout, self.conv_3,
+                  self.relu, self.dropout]
+        self.layers = nn.Sequential(*layers)
+        self.output_dimension = num_conv_channels * 3
+
+    def forward(self, input_images: torch.Tensor) -> torch.Tensor:
+        """
+        :param input_images: [batch_size, image_width, image_width, image_channels]
+        :return: [batch_size, 6 * 6, output_dim]
+        """
+        batch_size = input_images.size(0)
+        input_images = input_images.transpose(1, 3)
+        images_features = self.layers(input_images)
+        _, num_channels, _, image_dimension = images_features.size()
+        images_features = images_features.transpose(1, 3)
+        return images_features.reshape(batch_size, image_dimension, image_dimension, num_channels)
+
+
+

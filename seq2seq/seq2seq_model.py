@@ -153,7 +153,8 @@ class Attention(nn.Module):
 class AttentionDecoderRNN(nn.Module):
     """One-step batch decoder with Luong et al. attention"""
 
-    def __init__(self, hidden_size: int, output_size: int, num_layers: int, dropout_probability=0.1):
+    def __init__(self, hidden_size: int, output_size: int, num_layers: int, dropout_probability=0.1,
+                 conditional_attention=False):
         """
         :param hidden_size: number of hidden units in RNN, and embedding size for output symbols
         :param output_size: number of output symbols
@@ -162,6 +163,9 @@ class AttentionDecoderRNN(nn.Module):
         """
         super(AttentionDecoderRNN, self).__init__()
         self.num_layers = num_layers
+        self.conditional_attention = conditional_attention
+        if self.conditional_attention:
+            self.queries_to_keys = nn.Linear(hidden_size * 2, hidden_size)
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.dropout_probability = dropout_probability
@@ -208,8 +212,15 @@ class AttentionDecoderRNN(nn.Module):
             values=encoded_commands.transpose(0, 1), memory_lengths=commands_lengths)
         batch_size, image_num_memory, _ = encoded_situations.size()
         situation_lengths = [image_num_memory for _ in range(batch_size)]
+
+        if self.conditional_attention:
+            queries = torch.cat([lstm_output.transpose(0, 1), context_command], dim=-1)
+            queries = self.queries_to_keys(queries)
+        else:
+            queries = lstm_output.transpose(0, 1)
+
         context_situation, attention_weights_situations = self.attention.forward_masked(
-            queries=lstm_output.transpose(0, 1), keys=encoded_situations,
+            queries=queries, keys=encoded_situations,
             values=encoded_situations, memory_lengths=situation_lengths)
         # context : [batch_size, 1, hidden_size]
         # attention_weights : [batch_size, 1, max_input_length]
@@ -275,9 +286,14 @@ class AttentionDecoderRNN(nn.Module):
                                                                             values=encoded_commands.transpose(0, 1),
                                                                             memory_lengths=commands_lengths)
         # Compute context vector using attention
+        if self.conditional_attention:
+            queries = torch.cat([lstm_output.transpose(0, 1), context_commands], dim=-1)
+            queries = self.queries_to_keys(queries)
+        else:
+            queries = lstm_output.transpose(0, 1)
         batch_size, image_num_memory, _ = encoded_situations.size()
         situation_lengths = [image_num_memory for _ in range(batch_size)]
-        context_situation, attention_weights = self.attention.forward_masked(queries=lstm_output.transpose(0, 1),
+        context_situation, attention_weights = self.attention.forward_masked(queries=queries,
                                                                              keys=encoded_situations,
                                                                              values=encoded_situations,
                                                                              memory_lengths=situation_lengths)

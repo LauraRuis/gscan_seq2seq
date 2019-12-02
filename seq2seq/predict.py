@@ -75,7 +75,7 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
 
     # Loop over the data.
     for (input_sequence, input_lengths, derivation_spec, situation, situation_spec, target_sequence,
-         target_lengths) in data_iterator:
+         target_lengths, _, _) in data_iterator:
 
         # Encode the input sequence.
         encoded_input = model.encode_input(commands_input=input_sequence,

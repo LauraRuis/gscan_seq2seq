@@ -150,7 +150,7 @@ class Attention(nn.Module):
         return soft_values_retrieval, attention_weights
 
 
-class AttentionDecoderRNN(nn.Module):
+class LuongAttentionDecoderRNN(nn.Module):
     """One-step batch decoder with Luong et al. attention"""
 
     def __init__(self, hidden_size: int, output_size: int, num_layers: int, dropout_probability=0.1,
@@ -161,7 +161,7 @@ class AttentionDecoderRNN(nn.Module):
         :param num_layers: number of hidden layers
         :param dropout_probability: dropout applied to symbol embeddings and RNNs
         """
-        super(AttentionDecoderRNN, self).__init__()
+        super(LuongAttentionDecoderRNN, self).__init__()
         self.num_layers = num_layers
         self.conditional_attention = conditional_attention
         if self.conditional_attention:
@@ -180,7 +180,7 @@ class AttentionDecoderRNN(nn.Module):
     def forward_step(self, input_tokens: torch.LongTensor, last_hidden: Tuple[torch.Tensor, torch.Tensor],
                      encoded_commands: torch.Tensor, commands_lengths: List[int],
                      encoded_situations: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor],
-                                                                       torch.Tensor, torch.Tensor]:
+                                                                torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Run batch decoder forward for a single time step.
          Each decoder step considers all of the encoder_outputs through attention.
@@ -216,6 +216,7 @@ class AttentionDecoderRNN(nn.Module):
         if self.conditional_attention:
             queries = torch.cat([lstm_output.transpose(0, 1), context_command], dim=-1)
             queries = self.queries_to_keys(queries)
+            queries = self.tanh(queries)
         else:
             queries = lstm_output.transpose(0, 1)
 
@@ -236,14 +237,16 @@ class AttentionDecoderRNN(nn.Module):
                                   context_situation], dim=1)  # [batch_size, hidden_size*3]
         concat_output = self.tanh(self.hidden_context_to_hidden(concat_input))  # [batch_size, hidden_size]
         output = self.hidden_to_output(concat_output)  # [batch_size, output_size]
-        return output, hidden, attention_weights_commands, attention_weights_situations
+        return (output, hidden, attention_weights_situations.squeeze(dim=1), attention_weights_commands,
+                attention_weights_situations)
         # output : [un-normalized probabilities] [batch_size, output_size]
         # hidden: tuple of size [num_layers, batch_size, hidden_size] (for hidden and cell)
         # attention_weights: [batch_size, max_input_length]
 
     def forward(self, input_tokens: torch.LongTensor, input_lengths: List[int],
                 init_hidden: Tuple[torch.Tensor, torch.Tensor], encoded_commands: torch.Tensor,
-                commands_lengths: List[int], encoded_situations: torch.Tensor):
+                commands_lengths: List[int], encoded_situations: torch.Tensor) -> Tuple[torch.Tensor, List[int],
+                                                                                        torch.Tensor]:
         """
         Run batch attention decoder forward for a series of steps
          Each decoder step considers all of the encoder_outputs through attention.
@@ -285,10 +288,13 @@ class AttentionDecoderRNN(nn.Module):
                                                                             keys=encoded_commands.transpose(0, 1),
                                                                             values=encoded_commands.transpose(0, 1),
                                                                             memory_lengths=commands_lengths)
+        # context_commands = self.dropout(context_commands)
+
         # Compute context vector using attention
         if self.conditional_attention:
             queries = torch.cat([lstm_output.transpose(0, 1), context_commands], dim=-1)
             queries = self.queries_to_keys(queries)
+            queries = self.tanh(queries)
         else:
             queries = lstm_output.transpose(0, 1)
         batch_size, image_num_memory, _ = encoded_situations.size()
@@ -297,16 +303,185 @@ class AttentionDecoderRNN(nn.Module):
                                                                              keys=encoded_situations,
                                                                              values=encoded_situations,
                                                                              memory_lengths=situation_lengths)
+        # context_situation = self.dropout(context_situation)
+
         # context: [batch_size, max_length, hidden_size]
         # attention_weights: [batch_size, max_length, max_input_length]
 
         # Concatenate the context vector and RNN hidden state, and map to an output
         concat_input = torch.cat([lstm_output,
                                   context_commands.transpose(0, 1),
-                                  context_situation.transpose(0, 1)], 2)  # [max_length, batch_size, hidden_size*2]
+                                  context_situation.transpose(0, 1)], 2)  # [max_length, batch_size, hidden_size*3]
         concat_output = self.tanh(self.hidden_context_to_hidden(concat_input))  # [max_length, batch_size, hidden_size]
         output = self.hidden_to_output(concat_output)  # [max_length, batch_size, output_size]
-        return output, seq_len
+        return output, seq_len, attention_weights.sum(dim=1)
+        # output : [unnormalized log-score] [max_length, batch_size, output_size]
+        # seq_len : length of each output sequence
+
+    def initialize_hidden(self, encoder_message: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Populate the hidden variables with a message from the encoder.
+        All layers, and both the hidden and cell vectors, are filled with the same message.
+        :param encoder_message:  [batch_size, hidden_size] tensor
+        :return: tuple of Tensors representing the hidden and cell state of shape: [num_layers, batch_size, hidden_dim]
+        """
+        encoder_message = encoder_message.unsqueeze(0)  # [1, batch_size, hidden_size]
+        encoder_message = encoder_message.expand(self.num_layers, -1,
+                                                 -1).contiguous()  # [num_layers, batch_size, hidden_size]
+        return encoder_message.clone(), encoder_message.clone()
+
+    def extra_repr(self) -> str:
+        return "AttentionDecoderRNN\n num_layers={}\n hidden_size={}\n dropout={}\n num_output_symbols={}\n".format(
+            self.num_layers, self.hidden_size, self.dropout_probability, self.output_size
+        )
+
+
+class BahdanauAttentionDecoderRNN(nn.Module):
+    """One-step batch decoder with Luong et al. attention"""
+
+    def __init__(self, hidden_size: int, output_size: int, num_layers: int, dropout_probability=0.1,
+                 conditional_attention=False):
+        """
+        :param hidden_size: number of hidden units in RNN, and embedding size for output symbols
+        :param output_size: number of output symbols
+        :param num_layers: number of hidden layers
+        :param dropout_probability: dropout applied to symbol embeddings and RNNs
+        """
+        super(BahdanauAttentionDecoderRNN, self).__init__()
+        self.num_layers = num_layers
+        self.conditional_attention = conditional_attention
+        if self.conditional_attention:
+            self.queries_to_keys = nn.Linear(hidden_size * 2, hidden_size)
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.dropout_probability = dropout_probability
+        self.tanh = nn.Tanh()
+        self.embedding = nn.Embedding(output_size, hidden_size, padding_idx=0)  # TODO: change
+        self.dropout = nn.Dropout(dropout_probability)
+        self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers=num_layers, dropout=dropout_probability)
+        self.attention = Attention()
+        self.context_to_input = nn.Linear(hidden_size * 3, hidden_size)
+        self.hidden_to_output = nn.Linear(hidden_size, output_size)
+
+    def forward_step(self, input_tokens: torch.LongTensor, last_hidden: Tuple[torch.Tensor, torch.Tensor],
+                     encoded_commands: torch.Tensor, commands_lengths: List[int],
+                     encoded_situations: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor],
+                                                                torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Run batch decoder forward for a single time step.
+         Each decoder step considers all of the encoder_outputs through attention.
+         Attention retrieval is based on decoder hidden state (not cell state)
+
+        :param input_tokens: one time step inputs tokens of length batch_size
+        :param last_hidden: previous decoder state, which is pair of tensors [num_layers, batch_size, hidden_size]
+        (pair for hidden and cell)
+        :param encoded_commands: all encoder outputs, [max_input_length, batch_size, hidden_size]
+        :param commands_lengths: length of each padded input sequence that were passed to the encoder.
+        :param encoded_situations: the situation encoder outputs, [image_dimension * image_dimension, batch_size,
+         hidden_size]
+        :return: output : un-normalized output probabilities, [batch_size, output_size]
+          hidden : current decoder state, which is a pair of tensors [num_layers, batch_size, hidden_size]
+           (pair for hidden and cell)
+          attention_weights : attention weights, [batch_size, 1, max_input_length]
+        """
+        last_hidden, last_cell = last_hidden
+
+        # Embed each input symbol
+        embedded_input = self.embedding(input_tokens)  # [batch_size, hidden_size]
+        embedded_input = self.dropout(embedded_input)
+        embedded_input = embedded_input.unsqueeze(0)  # [1, batch_size, hidden_size]
+
+        # Bahdanau attention
+        context_command, attention_weights_commands = self.attention.forward_masked(
+            queries=last_hidden.transpose(0, 1), keys=encoded_commands.transpose(0, 1),
+            values=encoded_commands.transpose(0, 1), memory_lengths=commands_lengths)
+        batch_size, image_num_memory, _ = encoded_situations.size()
+        situation_lengths = [image_num_memory for _ in range(batch_size)]
+
+        if self.conditional_attention:
+            queries = torch.cat([last_hidden.transpose(0, 1), context_command], dim=-1)
+            queries = self.queries_to_keys(queries)
+        else:
+            queries = last_hidden.transpose(0, 1)
+
+        context_situation, attention_weights_situations = self.attention.forward_masked(
+            queries=queries, keys=encoded_situations,
+            values=encoded_situations, memory_lengths=situation_lengths)
+        # context : [batch_size, 1, hidden_size]
+        # attention_weights : [batch_size, 1, max_input_length]
+
+        # Concatenate the context vector and RNN hidden state, and map to an output
+        attention_weights_commands = attention_weights_commands.squeeze(1)  # [batch_size, max_input_length]
+        attention_weights_situations = attention_weights_situations.squeeze(1)  # [batch_size, im_dim * im_dim]
+        concat_input = torch.cat([embedded_input,
+                                  context_command.transpose(0, 1),
+                                  context_situation.transpose(0, 1)], dim=2)  # [batch_size, 1, hidden_size*3]
+        concat_output = self.tanh(self.context_to_input(concat_input))  # [batch_size, 1, hidden_size]
+
+        last_hidden = (last_hidden, last_cell)
+        lstm_output, hidden = self.lstm(concat_output, last_hidden)
+        # lstm_output: [1, batch_size, hidden_size]
+        # hidden: tuple of each [num_layers, batch_size, hidden_size] (pair for hidden and cell)
+        output = self.hidden_to_output(lstm_output)  # [batch_size, output_size]
+        output = output.squeeze(dim=0)
+        return (output, hidden, attention_weights_situations.squeeze(dim=1), attention_weights_commands,
+                attention_weights_situations)
+        # output : [un-normalized probabilities] [batch_size, output_size]
+        # hidden: tuple of size [num_layers, batch_size, hidden_size] (for hidden and cell)
+        # attention_weights: [batch_size, max_input_length]
+
+    def forward(self, input_tokens: torch.LongTensor, input_lengths: List[int],
+                init_hidden: Tuple[torch.Tensor, torch.Tensor], encoded_commands: torch.Tensor,
+                commands_lengths: List[int], encoded_situations: torch.Tensor) -> Tuple[torch.Tensor, List[int],
+                                                                                        torch.Tensor]:
+        """
+        Run batch attention decoder forward for a series of steps
+         Each decoder step considers all of the encoder_outputs through attention.
+         Attention retrieval is based on decoder hidden state (not cell state)
+
+        :param input_tokens: [batch_size, max_length];  padded target sequences
+        :param input_lengths: [batch_size] for sequence length of each padded target sequence
+        :param init_hidden: tuple of tensors [num_layers, batch_size, hidden_size] (for hidden and cell)
+        :param encoded_commands: [max_input_length, batch_size, embedding_dim]
+        :param commands_lengths: [batch_size] sequence length of each encoder sequence (without padding)
+        :param encoded_situations: [] TODO
+        :return: output : unnormalized log-score, [max_length, batch_size, output_size]
+          hidden : current decoder state, tuple with each [num_layers, batch_size, hidden_size] (for hidden and cell)
+        """
+        batch_size, max_time = input_tokens.size()
+
+        # Sort the sequences by length in descending order
+        input_lengths = torch.tensor(input_lengths, dtype=torch.long, device=device)
+        input_lengths, perm_idx = torch.sort(input_lengths, descending=True)
+        input_tokens_sorted = input_tokens.index_select(dim=0, index=perm_idx)
+        initial_h, initial_c = init_hidden
+        hidden = (initial_h.index_select(dim=1, index=perm_idx),
+                  initial_c.index_select(dim=1, index=perm_idx))
+        encoded_commands = encoded_commands.index_select(dim=1, index=perm_idx)
+        commands_lengths = torch.tensor(commands_lengths)
+        commands_lengths = commands_lengths.index_select(dim=0, index=perm_idx)
+        encoded_situations = encoded_situations.index_select(dim=0, index=perm_idx)
+
+        all_attention_weights = []
+        lstm_output = []
+        for time in range(max_time):
+            input_token = input_tokens_sorted[:, time]
+            (output, hidden, context_situation, attention_weights_commands,
+             attention_weights_situations) = self.forward_step(input_token, hidden, encoded_commands,
+                                                               commands_lengths,
+                                                               encoded_situations)
+            all_attention_weights.append(attention_weights_situations.unsqueeze(0))
+            lstm_output.append(output.unsqueeze(0))
+        lstm_output = torch.cat(lstm_output, dim=0)  # [max_time, batch_size, output_size]
+        attention_weights = torch.cat(all_attention_weights, dim=0)  # [max_time, batch_size, situation_dim**2]
+
+        # Reverse the sorting
+        _, unperm_idx = perm_idx.sort(0)
+        lstm_output = lstm_output.index_select(dim=1, index=unperm_idx)  # [max_time, batch_size, output_size]
+        seq_len = input_lengths[unperm_idx].tolist()
+        attention_weights = attention_weights.index_select(dim=1, index=unperm_idx)
+
+        return lstm_output, seq_len, attention_weights.sum(dim=0)
         # output : [unnormalized log-score] [max_length, batch_size, output_size]
         # seq_len : length of each output sequence
 

@@ -1,7 +1,5 @@
 # TODO: visualize training attention weights
 # TODO: visualize training loss
-# TODO: look into attention over full image
-
 import logging
 import torch
 import os
@@ -24,8 +22,7 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
           encoder_hidden_size: int, learning_rate: float, adam_beta_1: float, adam_beta_2: float, lr_decay: float,
           lr_decay_steps: int, resume_from_file: str, max_training_iterations: int, output_directory: str,
           print_every: int, evaluate_every: int, conditional_attention: bool, auxiliary_task: bool,
-          max_training_examples=None, seed=42,
-          **kwargs):
+          weight_target_loss: float, attention_type: str, max_training_examples=None, seed=42, **kwargs):
     device = torch.device(type='cuda') if use_cuda else torch.device(type='cpu')
     cfg = locals().copy()
 
@@ -50,7 +47,7 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
         logger.info("Saved vocabularies to {} for input and {} for target.".format(input_vocab_path, target_vocab_path))
 
     logger.info("Loading Test set...")
-    test_set = GroundedScanDataset(data_path, data_directory, split="test",  # TODO: also dev set
+    test_set = GroundedScanDataset(data_path, data_directory, split="test",
                                    input_vocabulary_file=input_vocab_path,
                                    target_vocabulary_file=target_vocab_path, generate_vocabulary=False)
     test_set.read_dataset(max_examples=kwargs["max_testing_examples"],
@@ -97,39 +94,49 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
                 batch_size=training_batch_size):
             is_best = False
             model.train()
-            target_scores, agent_position_scores, target_position_scores = model(commands_input=input_batch,
-                                                                                 commands_lengths=input_lengths,
-                                                                                 situations_input=situation_batch,
-                                                                                 target_batch=target_batch,
-                                                                                 target_lengths=target_lengths)
+
+            # Forward pass.
+            target_scores, target_position_scores = model(commands_input=input_batch, commands_lengths=input_lengths,
+                                                          situations_input=situation_batch, target_batch=target_batch,
+                                                          target_lengths=target_lengths)
             loss = model.get_loss(target_scores, target_batch)
             if auxiliary_task:
-                auxiliary_loss = model.get_auxiliary_loss(agent_position_scores, target_position_scores,
-                                                          agent_positions, target_positions)
-                loss += auxiliary_loss
+                target_loss = model.get_auxiliary_loss(target_position_scores, target_positions)
+            else:
+                target_loss = 0
+            loss += weight_target_loss * target_loss
+
+            # Backward pass and update model parameters.
             loss.backward()
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
             model.update_state(is_best=is_best)
 
+            # Print current metrics.
             if training_iteration % print_every == 0:
                 accuracy = model.get_accuracy(target_scores, target_batch)
+                if auxiliary_task:
+                    auxiliary_accuracy_target = model.get_auxiliary_accuracy(target_position_scores, target_positions)
+                else:
+                    auxiliary_accuracy_target = 0.
                 learning_rate = scheduler.get_lr()[0]
-                logger.info("Iteration %08d, loss %8.4f, accuracy %5.2f, learning_rate %.5f" % (training_iteration,
-                                                                                                loss, accuracy,
-                                                                                                learning_rate))
+                logger.info("Iteration %08d, loss %8.4f, accuracy %5.2f, learning_rate %.5f,"
+                            " aux. accuracy target pos %5.2f" % (training_iteration, loss, accuracy, learning_rate,
+                                                                 auxiliary_accuracy_target))
 
+            # Evaluate on test set.
             if training_iteration % evaluate_every == 0:
                 with torch.no_grad():
                     model.eval()
                     logger.info("Evaluating..")
-                    accuracy, exact_match = evaluate(
+                    accuracy, exact_match, target_accuracy = evaluate(
                         test_set.get_data_iterator(batch_size=1), model=model,
                         max_decoding_steps=max_decoding_steps, pad_idx=test_set.target_vocabulary.pad_idx,
                         sos_idx=test_set.target_vocabulary.sos_idx,
                         eos_idx=test_set.target_vocabulary.eos_idx)
-                    logger.info("  Evaluation Accuracy: %5.2f Exact Match: %5.2f" % (accuracy, exact_match))
+                    logger.info("  Evaluation Accuracy: %5.2f Exact Match: %5.2f "
+                                " Target Accuracy: %5.2f" % (accuracy, exact_match, target_accuracy))
                     if exact_match > best_exact_match:
                         is_best = True
                         best_accuracy = accuracy
@@ -137,11 +144,10 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
                         model.update_state(accuracy=accuracy, exact_match=exact_match, is_best=is_best)
                     file_name = "checkpoint.pth.tar".format(str(training_iteration))
                     if is_best:
-                        model.save_checkpoint(file_name=file_name, is_best=is_best, optimizer_state_dict=optimizer.state_dict())
+                        model.save_checkpoint(file_name=file_name, is_best=is_best,
+                                              optimizer_state_dict=optimizer.state_dict())
 
             training_iteration += 1
             if training_iteration > max_training_iterations:
                 break
-
     logger.info("Finished training.")
-

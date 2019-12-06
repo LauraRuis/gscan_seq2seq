@@ -36,7 +36,7 @@ def predict_and_save(dataset: GroundedScanDataset, model: nn.Module, output_file
         output = []
         with torch.no_grad():
             for (input_sequence, derivation_spec, situation_spec, output_sequence, target_sequence,
-                 attention_weights_commands, attention_weights_situations) in predict(
+                 attention_weights_commands, attention_weights_situations, _) in predict(
                     dataset.get_data_iterator(batch_size=1), model=model, max_decoding_steps=max_decoding_steps,
                     pad_idx=dataset.target_vocabulary.pad_idx, sos_idx=dataset.target_vocabulary.sos_idx,
                     eos_idx=dataset.target_vocabulary.eos_idx):
@@ -75,7 +75,7 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
 
     # Loop over the data.
     for (input_sequence, input_lengths, derivation_spec, situation, situation_spec, target_sequence,
-         target_lengths, _, _) in data_iterator:
+         target_lengths, agent_positions, target_positions) in data_iterator:
 
         # Encode the input sequence.
         encoded_input = model.encode_input(commands_input=input_sequence,
@@ -84,13 +84,15 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
 
         # Iteratively decode the output.
         output_sequence = []
+        contexts_situation = []
         hidden = model.attention_decoder.initialize_hidden(encoded_input["hidden_states"])
         token = torch.tensor([sos_idx], dtype=torch.long, device=device)
         decoding_iteration = 0
         attention_weights_commands = []
         attention_weights_situations = []
         while token != eos_idx and decoding_iteration <= max_decoding_steps:
-            output, hidden, attention_weights_command, attention_weights_situation = model.decode_input(
+            (output, hidden, context_situation, attention_weights_command,
+             attention_weights_situation) = model.decode_input(
                 target_token=token, hidden=hidden, encoder_outputs=encoded_input["encoded_commands"]["encoder_outputs"],
                 input_lengths=input_lengths, encoded_situations=encoded_input["encoded_situations"])
             output = F.log_softmax(output, dim=-1)
@@ -98,14 +100,20 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
             output_sequence.append(token.data[0].item())
             attention_weights_commands.append(attention_weights_command.tolist())
             attention_weights_situations.append(attention_weights_situation.tolist())
+            contexts_situation.append(context_situation.unsqueeze(1))
             decoding_iteration += 1
 
         if output_sequence[-1] == eos_idx:
             output_sequence.pop()
             attention_weights_commands.pop()
             attention_weights_situations.pop()
+        if model.auxiliary_task:
+            target_position_scores = model.auxiliary_task_forward(torch.cat(contexts_situation, dim=1).sum(dim=1))
+            auxiliary_accuracy_target = model.get_auxiliary_accuracy(target_position_scores, target_positions)
+        else:
+            auxiliary_accuracy_agent, auxiliary_accuracy_target = 0, 0
         yield (input_sequence, derivation_spec, situation_spec, output_sequence, target_sequence,
-               attention_weights_commands, attention_weights_situations)
+               attention_weights_commands, attention_weights_situations, auxiliary_accuracy_target)
 
     elapsed_time = time.time() - start_time
     logging.info("Done predicting in {} seconds.".format(elapsed_time))

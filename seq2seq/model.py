@@ -12,7 +12,8 @@ import shutil
 from seq2seq.cnn_model import ConvolutionalNet
 from seq2seq.cnn_model import DownSamplingConvolutionalNet
 from seq2seq.seq2seq_model import EncoderRNN
-from seq2seq.seq2seq_model import AttentionDecoderRNN
+from seq2seq.seq2seq_model import LuongAttentionDecoderRNN
+from seq2seq.seq2seq_model import BahdanauAttentionDecoderRNN
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -28,7 +29,7 @@ class Model(nn.Module):
                  decoder_hidden_size: int, image_dimensions: int, num_cnn_channels: int, cnn_kernel_size: int,
                  cnn_dropout_p: float, cnn_hidden_num_channels: int, input_padding_idx: int, target_pad_idx: int,
                  target_eos_idx: int, output_directory: str, conditional_attention: bool, auxiliary_task: bool,
-                 simple_situation_representation: bool, **kwargs):
+                 simple_situation_representation: bool, attention_type: str, **kwargs):
         super(Model, self).__init__()
 
         self.simple_situation_representation = simple_situation_representation
@@ -40,16 +41,15 @@ class Model(nn.Module):
         else:
             cnn_input_channels = num_cnn_channels
         # Input: [batch_size, image_width, image_width, num_channels]
-        # Output: [batch_size, image_width * image_width, num_conv_channels * num_channels]
+        # Output: [batch_size, image_width * image_width, num_conv_channels * 3]
         self.situation_encoder = ConvolutionalNet(num_channels=cnn_input_channels,
                                                   num_conv_channels=cnn_hidden_num_channels,
                                                   kernel_size=cnn_kernel_size, dropout_probability=cnn_dropout_p)
-        self.situation_to_hidden = nn.Linear(cnn_hidden_num_channels * num_cnn_channels, decoder_hidden_size)
+        self.situation_to_hidden = nn.Linear(cnn_hidden_num_channels * 3, decoder_hidden_size)
 
         self.auxiliary_task = auxiliary_task
         if auxiliary_task:
-            self.situation_to_agent_pos = nn.Linear(6 * 6 * cnn_hidden_num_channels, 6 * 6)
-            self.situation_to_target_pos = nn.Linear(6 * 6 * cnn_hidden_num_channels, 6 * 6)
+            # self.situation_to_target_pos = nn.Linear(decoder_hidden_size, 6 * 6)
             self.auxiliary_loss_criterion = nn.NLLLoss()
 
         # Input: [batch_size, max_input_length]
@@ -61,20 +61,33 @@ class Model(nn.Module):
                                   dropout_probability=encoder_dropout_p, bidirectional=encoder_bidirectional,
                                   padding_idx=input_padding_idx)
         self.command_to_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
+        self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
 
         # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
         # Input for attention: [batch_size, max_input_length, hidden_size],
         #                      [batch_size, image_width * image_width, hidden_size]
         # Output: [max_target_length, batch_size, target_vocabulary_size]
-        self.attention_decoder = AttentionDecoderRNN(hidden_size=encoder_hidden_size,
-                                                     output_size=target_vocabulary_size, num_layers=num_decoder_layers,
-                                                     dropout_probability=decoder_dropout_p,
-                                                     conditional_attention=conditional_attention)
+        self.attention_type = attention_type
+        if attention_type == "bahdanau":
+            self.attention_decoder = BahdanauAttentionDecoderRNN(hidden_size=decoder_hidden_size,
+                                                              output_size=target_vocabulary_size,
+                                                              num_layers=num_decoder_layers,
+                                                              dropout_probability=decoder_dropout_p,
+                                                              conditional_attention=conditional_attention)
+        elif attention_type == "luong":
+            self.attention_decoder = LuongAttentionDecoderRNN(hidden_size=decoder_hidden_size,
+                                                              output_size=target_vocabulary_size,
+                                                              num_layers=num_decoder_layers,
+                                                              dropout_probability=decoder_dropout_p,
+                                                              conditional_attention=conditional_attention)
+        else:
+            raise ValueError("Unknown attention type {} specified.".format(attention_type))
 
         self.target_eos_idx = target_eos_idx
         self.target_pad_idx = target_pad_idx
         self.loss_criterion = nn.NLLLoss(ignore_index=target_pad_idx)
-
+        self.tanh = nn.Tanh()
+        self.dropout = nn.Dropout(p=encoder_dropout_p)
         self.output_directory = output_directory
         self.trained_iterations = 0
         self.best_iteration = 0
@@ -106,8 +119,13 @@ class Model(nn.Module):
             accuracy = 100. * match_targets / total
         return accuracy
 
-    def get_auxiliary_accuracy(self):
-        raise NotImplementedError()
+    @staticmethod
+    def get_auxiliary_accuracy(target_scores: torch.Tensor, targets: torch.Tensor) -> float:
+        with torch.no_grad():
+            predicted_targets = target_scores.max(dim=1)[1]
+            equal_targets = torch.eq(targets.data, predicted_targets.data).long().sum().data.item()
+            accuracy = 100. * equal_targets / len(targets)
+        return accuracy
 
     def get_loss(self, target_scores: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
@@ -124,33 +142,34 @@ class Model(nn.Module):
         loss = self.loss_criterion(target_scores_2d, targets.view(-1))
         return loss
 
-    def get_auxiliary_loss(self, auxiliary_scores_agent: torch.Tensor, auxiliary_scores_target: torch.Tensor,
-                           target_agent_positions: torch.Tensor, target_target_positions: torch.Tensor):
-        agent_loss = self.auxiliary_loss_criterion(auxiliary_scores_agent, target_agent_positions.view(-1))
+    def get_auxiliary_loss(self, auxiliary_scores_target: torch.Tensor, target_target_positions: torch.Tensor):
         target_loss = self.auxiliary_loss_criterion(auxiliary_scores_target, target_target_positions.view(-1))
-        return agent_loss + target_loss
+        return target_loss
 
-    def auxiliary_task_forward(self, situation_representation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def auxiliary_task_forward(self, output_scores_target_pos: torch.Tensor) -> torch.Tensor:
         assert self.auxiliary_task, "Please set auxiliary_task to True if using it."
-        batch_size, flattened_image_dim, num_channels = situation_representation.size()
-        output_scores_agent_pos = self.situation_to_agent_pos(situation_representation.reshape(batch_size, -1))
-        output_scores_agent_pos = F.log_softmax(output_scores_agent_pos, -1)
-        output_scores_target_pos = self.situation_to_target_pos(situation_representation.reshape(batch_size, -1))
+        batch_size, _ = output_scores_target_pos.size()
         output_scores_target_pos = F.log_softmax(output_scores_target_pos, -1)
-        return output_scores_agent_pos, output_scores_target_pos
+        return output_scores_target_pos
 
     def encode_input(self, commands_input: torch.LongTensor, commands_lengths: List[int],
                      situations_input: torch.Tensor) -> Dict[str, torch.Tensor]:
         if not self.simple_situation_representation:
             situations_input = self.downsample_image(situations_input)
         encoded_image = self.situation_encoder(situations_input)
-        encoded_image = self.situation_to_hidden(encoded_image)
+        encoded_image = self.tanh(self.situation_to_hidden(encoded_image))
+        # encoded_image = self.dropout(encoded_image)
         hidden, encoder_outputs = self.encoder(commands_input, commands_lengths)
-        encoder_outputs["encoder_outputs"] = self.command_to_hidden(encoder_outputs["encoder_outputs"])
+        encoder_outputs["encoder_outputs"] = self.tanh(self.command_to_hidden(encoder_outputs["encoder_outputs"]))
+        # encoder_outputs["encoder_outputs"] = self.dropout(encoder_outputs["encoder_outputs"])
+        hidden = self.tanh(self.enc_hidden_to_dec_hidden(hidden))
+        # hidden = self.dropout(hidden)
         return {"encoded_situations": encoded_image, "encoded_commands": encoder_outputs, "hidden_states": hidden}
 
     def decode_input(self, target_token: torch.LongTensor, hidden: torch.Tensor, encoder_outputs: torch.Tensor,
                      input_lengths: List[int], encoded_situations: torch.Tensor) -> Tuple[torch.Tensor,
+                                                                                          Tuple[torch.Tensor,
+                                                                                                torch.Tensor],
                                                                                           torch.Tensor, torch.Tensor,
                                                                                           torch.Tensor]:
         return self.attention_decoder.forward_step(input_tokens=target_token, last_hidden=hidden,
@@ -159,37 +178,34 @@ class Model(nn.Module):
 
     def decode_input_batched(self, target_batch: torch.LongTensor, target_lengths: List[int],
                              initial_hidden: torch.Tensor, encoded_commands: torch.Tensor,
-                             command_lengths: List[int], encoded_situations: torch.Tensor) -> torch.Tensor:
+                             command_lengths: List[int], encoded_situations: torch.Tensor) -> Tuple[torch.Tensor,
+                                                                                                    torch.Tensor]:
         initial_hidden = self.attention_decoder.initialize_hidden(initial_hidden)
-        decoder_output_batched, _ = self.attention_decoder(input_tokens=target_batch,
-                                                           input_lengths=target_lengths,
-                                                           init_hidden=initial_hidden,
-                                                           encoded_commands=encoded_commands,
-                                                           commands_lengths=command_lengths,
-                                                           encoded_situations=encoded_situations)
+        decoder_output_batched, _, context_situation = self.attention_decoder(input_tokens=target_batch,
+                                                                              input_lengths=target_lengths,
+                                                                              init_hidden=initial_hidden,
+                                                                              encoded_commands=encoded_commands,
+                                                                              commands_lengths=command_lengths,
+                                                                              encoded_situations=encoded_situations)
         decoder_output_batched = F.log_softmax(decoder_output_batched, dim=-1)
-        return decoder_output_batched
+        return decoder_output_batched, context_situation
 
     def forward(self, commands_input: torch.LongTensor, commands_lengths: List[int], situations_input: torch.Tensor,
-                target_batch: torch.LongTensor, target_lengths: List[int]) -> Tuple[torch.Tensor, torch.Tensor,
-                                                                                    torch.Tensor]:
+                target_batch: torch.LongTensor, target_lengths: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
         encoder_output = self.encode_input(commands_input=commands_input, commands_lengths=commands_lengths,
                                            situations_input=situations_input)
-        if self.auxiliary_task:
-            agent_position_scores, target_position_scores = self.auxiliary_task_forward(
-                encoder_output["encoded_situations"])
-        else:
-            agent_position_scores, target_position_scores = torch.zeros(1), torch.zeros(1)
-        decoder_output = self.decode_input_batched(
+        decoder_output, context_situation = self.decode_input_batched(
             target_batch=target_batch, target_lengths=target_lengths, initial_hidden=encoder_output["hidden_states"],
             encoded_commands=encoder_output["encoded_commands"]["encoder_outputs"], command_lengths=commands_lengths,
             encoded_situations=encoder_output["encoded_situations"])
+        if self.auxiliary_task:
+            target_position_scores = self.auxiliary_task_forward(context_situation)
+        else:
+            target_position_scores = torch.zeros(1), torch.zeros(1)
         return (decoder_output.transpose(0, 1),  # [batch_size, max_target_seq_length, target_vocabulary_size]
-                agent_position_scores,
                 target_position_scores)
 
     def update_state(self, is_best: bool, accuracy=None, exact_match=None) -> {}:
-        # TODO: also save best loss and load
         self.trained_iterations += 1
         if is_best:
             self.best_exact_match = exact_match
@@ -206,7 +222,6 @@ class Model(nn.Module):
         return checkpoint["optimizer_state_dict"]
 
     def get_current_state(self):
-        # TODO: also save best loss and load
         return {
             "iteration": self.trained_iterations,
             "state_dict": self.state_dict(),

@@ -1,2 +1,5 @@
-torch
+pytorch
 torchvision
+numpy
+gym
+pronounceable

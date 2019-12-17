@@ -29,17 +29,16 @@ def predict_and_save(dataset: GroundedScanDataset, model: nn.Module, output_file
     """
     cfg = locals().copy()
 
-    dataset.read_dataset(max_examples=max_testing_examples)
-    logger.info("Done Loading data.")
-
     with open(output_file_path, mode='w') as outfile:
         output = []
         with torch.no_grad():
+            i = 0
             for (input_sequence, derivation_spec, situation_spec, output_sequence, target_sequence,
                  attention_weights_commands, attention_weights_situations, _) in predict(
                     dataset.get_data_iterator(batch_size=1), model=model, max_decoding_steps=max_decoding_steps,
                     pad_idx=dataset.target_vocabulary.pad_idx, sos_idx=dataset.target_vocabulary.sos_idx,
                     eos_idx=dataset.target_vocabulary.eos_idx):
+                i += 1
                 accuracy = sequence_accuracy(output_sequence, target_sequence[0].tolist()[1:-1])
                 input_str_sequence = dataset.array_to_sentence(input_sequence[0].tolist(), vocabulary="input")
                 input_str_sequence = input_str_sequence[1:-1]  # Get rid of <SOS> and <EOS>
@@ -53,6 +52,7 @@ def predict_and_save(dataset: GroundedScanDataset, model: nn.Module, output_file
                                "attention_weights_situation": attention_weights_situations,
                                "accuracy": accuracy,
                                "exact_match": True if accuracy == 100 else False})
+        logger.info("Wrote predictions for {} examples.".format(i))
         json.dump(output, outfile, indent=4)
     return output_file_path
 
@@ -74,9 +74,10 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
     start_time = time.time()
 
     # Loop over the data.
+    i = 0
     for (input_sequence, input_lengths, derivation_spec, situation, situation_spec, target_sequence,
          target_lengths, agent_positions, target_positions) in data_iterator:
-
+        i += 1
         # Encode the input sequence.
         encoded_input = model.encode_input(commands_input=input_sequence,
                                            commands_lengths=input_lengths,
@@ -116,4 +117,5 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
                attention_weights_commands, attention_weights_situations, auxiliary_accuracy_target)
 
     elapsed_time = time.time() - start_time
+    logging.info("Predicted for {} examples.".format(i))
     logging.info("Done predicting in {} seconds.".format(elapsed_time))

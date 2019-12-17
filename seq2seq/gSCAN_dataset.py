@@ -175,7 +175,9 @@ class GroundedScanDataset(object):
         :return: tuple of input commands batch, corresponding input lengths, situation image batch,
         list of corresponding situation representations, target commands batch and corresponding target lengths.
         """
-        for example_i in range(0, len(self._examples) - batch_size, batch_size):
+        for example_i in range(0, len(self._examples), batch_size):
+            if example_i + batch_size > len(self._examples):
+                batch_size = len(self._examples) - example_i
             examples = self._examples[example_i:example_i + batch_size]
             input_lengths = self._input_lengths[example_i:example_i + batch_size]
             target_lengths = self._target_lengths[example_i:example_i + batch_size]
@@ -194,6 +196,9 @@ class GroundedScanDataset(object):
                 padded_input = torch.cat([
                     example["input_tensor"],
                     torch.zeros(int(to_pad_input), dtype=torch.long, device=device).unsqueeze(0)], dim=1)
+                # padded_input = torch.cat([
+                #     torch.zeros_like(example["input_tensor"], dtype=torch.long, device=device),
+                #     torch.zeros(int(to_pad_input), dtype=torch.long, device=device).unsqueeze(0)], dim=1) # TODO: change back
                 padded_target = torch.cat([
                     example["target_tensor"],
                     torch.zeros(int(to_pad_target), dtype=torch.long, device=device).unsqueeze(0)], dim=1)

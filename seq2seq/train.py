@@ -54,8 +54,7 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
                           simple_situation_representation=simple_situation_representation)
     logger.info("Done Loading Test set.")
 
-    model = Model(image_dimensions=training_set.image_dimensions,
-                  input_vocabulary_size=training_set.input_vocabulary_size,
+    model = Model(input_vocabulary_size=training_set.input_vocabulary_size,
                   target_vocabulary_size=training_set.target_vocabulary_size,
                   num_cnn_channels=training_set.image_channels,
                   input_padding_idx=training_set.input_vocabulary.pad_idx,
@@ -115,15 +114,15 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
 
             # Print current metrics.
             if training_iteration % print_every == 0:
-                accuracy = model.get_accuracy(target_scores, target_batch)
+                accuracy, exact_match = model.get_metrics(target_scores, target_batch)
                 if auxiliary_task:
                     auxiliary_accuracy_target = model.get_auxiliary_accuracy(target_position_scores, target_positions)
                 else:
                     auxiliary_accuracy_target = 0.
                 learning_rate = scheduler.get_lr()[0]
-                logger.info("Iteration %08d, loss %8.4f, accuracy %5.2f, learning_rate %.5f,"
-                            " aux. accuracy target pos %5.2f" % (training_iteration, loss, accuracy, learning_rate,
-                                                                 auxiliary_accuracy_target))
+                logger.info("Iteration %08d, loss %8.4f, accuracy %5.2f, exact match %5.2f, learning_rate %.5f,"
+                            " aux. accuracy target pos %5.2f" % (training_iteration, loss, accuracy, exact_match,
+                                                                 learning_rate, auxiliary_accuracy_target))
 
             # Evaluate on test set.
             if training_iteration % evaluate_every == 0:

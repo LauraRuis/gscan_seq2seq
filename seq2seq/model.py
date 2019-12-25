@@ -26,7 +26,7 @@ class Model(nn.Module):
     def __init__(self, input_vocabulary_size: int, embedding_dimension: int, encoder_hidden_size: int,
                  num_encoder_layers: int, target_vocabulary_size: int, encoder_dropout_p: float,
                  encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float,
-                 decoder_hidden_size: int, image_dimensions: int, num_cnn_channels: int, cnn_kernel_size: int,
+                 decoder_hidden_size: int, num_cnn_channels: int, cnn_kernel_size: int,
                  cnn_dropout_p: float, cnn_hidden_num_channels: int, input_padding_idx: int, target_pad_idx: int,
                  target_eos_idx: int, output_directory: str, conditional_attention: bool, auxiliary_task: bool,
                  simple_situation_representation: bool, attention_type: str, **kwargs):
@@ -49,7 +49,6 @@ class Model(nn.Module):
 
         self.auxiliary_task = auxiliary_task
         if auxiliary_task:
-            # self.situation_to_target_pos = nn.Linear(decoder_hidden_size, 6 * 6)
             self.auxiliary_loss_criterion = nn.NLLLoss()
 
         # Input: [batch_size, max_input_length]
@@ -70,10 +69,10 @@ class Model(nn.Module):
         self.attention_type = attention_type
         if attention_type == "bahdanau":
             self.attention_decoder = BahdanauAttentionDecoderRNN(hidden_size=decoder_hidden_size,
-                                                              output_size=target_vocabulary_size,
-                                                              num_layers=num_decoder_layers,
-                                                              dropout_probability=decoder_dropout_p,
-                                                              conditional_attention=conditional_attention)
+                                                                 output_size=target_vocabulary_size,
+                                                                 num_layers=num_decoder_layers,
+                                                                 dropout_probability=decoder_dropout_p,
+                                                                 conditional_attention=conditional_attention)
         elif attention_type == "luong":
             self.attention_decoder = LuongAttentionDecoderRNN(hidden_size=decoder_hidden_size,
                                                               output_size=target_vocabulary_size,
@@ -87,7 +86,8 @@ class Model(nn.Module):
         self.target_pad_idx = target_pad_idx
         self.loss_criterion = nn.NLLLoss(ignore_index=target_pad_idx)
         self.tanh = nn.Tanh()
-        self.dropout = nn.Dropout(p=encoder_dropout_p)
+        self.enc_dropout = nn.Dropout(p=encoder_dropout_p)
+        self.dec_dropout = nn.Dropout(p=decoder_dropout_p)
         self.output_directory = output_directory
         self.trained_iterations = 0
         self.best_iteration = 0
@@ -102,7 +102,7 @@ class Model(nn.Module):
         output_tensor = torch.cat([input_tensor, torch.zeros(batch_size, dtype=torch.long).unsqueeze(dim=1)], dim=1)
         return output_tensor
 
-    def get_accuracy(self, target_scores: torch.Tensor, targets: torch.Tensor) -> float:
+    def get_metrics(self, target_scores: torch.Tensor, targets: torch.Tensor) -> Tuple[float, float]:
         """
         :param target_scores: probabilities over target vocabulary outputted by the model, of size
                               [batch_size, max_target_length, target_vocab_size]
@@ -115,9 +115,14 @@ class Model(nn.Module):
             total = mask.sum().data.item()
             predicted_targets = target_scores.max(dim=2)[1]
             equal_targets = torch.eq(targets.data, predicted_targets.data).long()
-            match_targets = (equal_targets * mask).sum().data.item()
-            accuracy = 100. * match_targets / total
-        return accuracy
+            match_targets = (equal_targets * mask)
+            match_sum_per_example = match_targets.sum(dim=1)
+            expected_sum_per_example = mask.sum(dim=1)
+            batch_size = expected_sum_per_example.size(0)
+            exact_match = 100. * (match_sum_per_example == expected_sum_per_example).sum().data.item() / batch_size
+            match_targets_sum = match_targets.sum().data.item()
+            accuracy = 100. * match_targets_sum / total
+        return accuracy, exact_match
 
     @staticmethod
     def get_auxiliary_accuracy(target_scores: torch.Tensor, targets: torch.Tensor) -> float:
@@ -158,12 +163,12 @@ class Model(nn.Module):
             situations_input = self.downsample_image(situations_input)
         encoded_image = self.situation_encoder(situations_input)
         encoded_image = self.tanh(self.situation_to_hidden(encoded_image))
-        # encoded_image = self.dropout(encoded_image)
+        # encoded_image = self.enc_dropout(encoded_image)
         hidden, encoder_outputs = self.encoder(commands_input, commands_lengths)
         encoder_outputs["encoder_outputs"] = self.tanh(self.command_to_hidden(encoder_outputs["encoder_outputs"]))
-        # encoder_outputs["encoder_outputs"] = self.dropout(encoder_outputs["encoder_outputs"])
+        # encoder_outputs["encoder_outputs"] = self.enc_dropout(encoder_outputs["encoder_outputs"])
         hidden = self.tanh(self.enc_hidden_to_dec_hidden(hidden))
-        # hidden = self.dropout(hidden)
+        # hidden = self.enc_dropout(hidden)
         return {"encoded_situations": encoded_image, "encoded_commands": encoder_outputs, "hidden_states": hidden}
 
     def decode_input(self, target_token: torch.LongTensor, hidden: torch.Tensor, encoder_outputs: torch.Tensor,

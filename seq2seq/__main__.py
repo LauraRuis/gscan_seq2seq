@@ -3,8 +3,8 @@
 # TODO: check whether conv with filter size equal to grid size is necessary for performance
 # TODO: consider beam search
 # TODO: do self.command_to_hidden and self.enc_hidden_to_dec_hidden need to be separate weights?
-# TODO: try training without input command as sanity check against bias in data
-# TODO: also make small random test set for generalization split (with first 4 experiments)
+# TODO: Make convention of always first vertical then horizontal in supervision signal
+# TODO: Also consider first horizontal then vertical in evaluation signal
 
 import argparse
 import logging
@@ -65,7 +65,7 @@ parser.add_argument("--image_situation_representation", dest="simple_situation_r
                     action="store_false")
 parser.add_argument("--cnn_hidden_num_channels", type=int, default=50)
 parser.add_argument("--cnn_kernel_size", type=int, default=1)
-parser.add_argument("--cnn_dropout_p", type=float, default=0.)
+parser.add_argument("--cnn_dropout_p", type=float, default=0.1)
 parser.add_argument("--auxiliary_task", dest="auxiliary_task", default=False, action="store_true")
 parser.add_argument("--no_auxiliary_task", dest="auxiliary_task", default=True, action="store_false")
 
@@ -73,14 +73,14 @@ parser.add_argument("--no_auxiliary_task", dest="auxiliary_task", default=True, 
 parser.add_argument("--embedding_dimension", type=int, default=25)
 parser.add_argument("--num_encoder_layers", type=int, default=1)
 parser.add_argument("--encoder_hidden_size", type=int, default=100)
-parser.add_argument("--encoder_dropout_p", type=float, default=0.)
+parser.add_argument("--encoder_dropout_p", type=float, default=0.3)
 parser.add_argument("--encoder_bidirectional", dest="encoder_bidirectional", default=True, action="store_true")
 parser.add_argument("--encoder_unidirectional", dest="encoder_bidirectional", default=False, action="store_false")
 
 # Decoder arguments
 parser.add_argument("--num_decoder_layers", type=int, default=1)
 parser.add_argument("--attention_type", type=str, default='luong', choices=['bahdanau', 'luong'])
-parser.add_argument("--decoder_dropout_p", type=float, default=0.)
+parser.add_argument("--decoder_dropout_p", type=float, default=0.3)
 parser.add_argument("--decoder_hidden_size", type=int, default=100)
 parser.add_argument("--conditional_attention", dest="conditional_attention", default=True, action="store_true")
 parser.add_argument("--no_conditional_attention", dest="conditional_attention", default=False, action="store_false")
@@ -123,8 +123,7 @@ def main(flags):
         logger.info("  Output vocabulary size: {}".format(test_set.target_vocabulary_size))
         logger.info("  Most common target words: {}".format(test_set.target_vocabulary.most_common(5)))
 
-        model = Model(image_dimensions=test_set.image_dimensions,
-                      input_vocabulary_size=test_set.input_vocabulary_size,
+        model = Model(input_vocabulary_size=test_set.input_vocabulary_size,
                       target_vocabulary_size=test_set.target_vocabulary_size,
                       num_cnn_channels=test_set.image_channels,
                       input_padding_idx=test_set.input_vocabulary.pad_idx,

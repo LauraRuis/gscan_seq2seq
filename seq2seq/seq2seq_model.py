@@ -73,7 +73,6 @@ class EncoderRNN(nn.Module):
             packed_output)  # [max_length, batch_size, hidden_size * num_directions]
 
         # If biLSTM, sum the outputs for each direction
-        # TODO: ask question about this (why not half the hidden size and concat for example?)
         if self.bidirectional:
             output_per_timestep = output_per_timestep.view(int(max_length), batch_size, 2, self.hidden_size)
             output_per_timestep = torch.sum(output_per_timestep, 2)  # [max_length, batch_size, hidden_size]
@@ -236,6 +235,7 @@ class LuongAttentionDecoderRNN(nn.Module):
                                   context_command,
                                   context_situation], dim=1)  # [batch_size, hidden_size*3]
         concat_output = self.tanh(self.hidden_context_to_hidden(concat_input))  # [batch_size, hidden_size]
+        # concat_output = self.dropout(concat_output)
         output = self.hidden_to_output(concat_output)  # [batch_size, output_size]
         return (output, hidden, attention_weights_situations.squeeze(dim=1), attention_weights_commands,
                 attention_weights_situations)
@@ -313,6 +313,7 @@ class LuongAttentionDecoderRNN(nn.Module):
                                   context_commands.transpose(0, 1),
                                   context_situation.transpose(0, 1)], 2)  # [max_length, batch_size, hidden_size*3]
         concat_output = self.tanh(self.hidden_context_to_hidden(concat_input))  # [max_length, batch_size, hidden_size]
+        # concat_output = self.dropout(concat_output)
         output = self.hidden_to_output(concat_output)  # [max_length, batch_size, output_size]
         return output, seq_len, attention_weights.sum(dim=1)
         # output : [unnormalized log-score] [max_length, batch_size, output_size]

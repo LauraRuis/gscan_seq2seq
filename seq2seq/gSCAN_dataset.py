@@ -230,6 +230,7 @@ class GroundedScanDataset(object):
             empty_example = {}
             input_commands = example["input_command"]
             target_commands = example["target_command"]
+            equivalent_target_commands = example["equivalent_target_command"]
             situation_image = example["situation_image"]
             if i == 0:
                 self.image_dimensions = situation_image.shape[0]
@@ -237,10 +238,13 @@ class GroundedScanDataset(object):
             situation_repr = example["situation_representation"]
             input_array = self.sentence_to_array(input_commands, vocabulary="input")
             target_array = self.sentence_to_array(target_commands, vocabulary="target")
+            equivalent_target_array = self.sentence_to_array(equivalent_target_commands, vocabulary="target")
             empty_example["input_tensor"] = torch.tensor(input_array, dtype=torch.long, device=device).unsqueeze(
                 dim=0)
             empty_example["target_tensor"] = torch.tensor(target_array, dtype=torch.long, device=device).unsqueeze(
                 dim=0)
+            empty_example["equivalent_target_tensor"] = torch.tensor(equivalent_target_array, dtype=torch.long,
+                                                                     device=device).unsqueeze(dim=0)
             empty_example["situation_tensor"] = torch.tensor(situation_image, dtype=torch.float, device=device
                                                              ).unsqueeze(dim=0)
             empty_example["situation_representation"] = situation_repr

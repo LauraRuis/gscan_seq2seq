@@ -1,5 +1,8 @@
-pytorch
+torch
 torchvision
 numpy
 gym
 pronounceable
+matplotlib
+imageio
+PyQt5

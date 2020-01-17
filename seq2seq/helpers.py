@@ -6,8 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
+device = torch.device("cpu")
 def sequence_mask(sequence_lengths: torch.LongTensor, max_len=None) -> torch.tensor:
     """
     Create a sequence mask that masks out all indices larger than some sequence length as defined by

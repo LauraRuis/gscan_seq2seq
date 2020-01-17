@@ -42,10 +42,11 @@ def expand_args(params, runs):
 # NOTE for list arguments, use string.
 args_grid = dict(
     mode=["train"],
-    data_directory=["data/full_uniform_nononce"],
-    attention_type=["bahdanau", "luong"],
-    output_directory=["uniform_small_model"],
-    training_batch_size=[200, 300, 500]
+    data_directory=["data/final_generalization_set"],
+    attention_type=["bahdanau"],
+    output_directory=["final_exp"],
+    training_batch_size=[50],
+    max_training_iterations=[200000]
 )
 
 

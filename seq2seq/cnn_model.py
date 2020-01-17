@@ -4,8 +4,7 @@ import torch.nn as nn
 
 class ConvolutionalNet(nn.Module):
     """Simple conv. net. Convolves the input channels but retains input image width."""
-    def __init__(self, num_channels: int, num_conv_channels: int, kernel_size: int, dropout_probability: float,
-                 stride=1):
+    def __init__(self, num_channels: int, num_conv_channels: int, dropout_probability: float, stride=1):
         super(ConvolutionalNet, self).__init__()
         self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=1,
                                 padding=0, stride=stride)

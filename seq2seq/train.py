@@ -12,6 +12,7 @@ from seq2seq.evaluate import evaluate
 
 logger = logging.getLogger(__name__)
 use_cuda = True if torch.cuda.is_available() else False
+use_cuda = False
 
 
 def train(data_path: str, data_directory: str, generate_vocabularies: bool, input_vocab_path: str,
@@ -47,11 +48,14 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
         logger.info("Saved vocabularies to {} for input and {} for target.".format(input_vocab_path, target_vocab_path))
 
     logger.info("Loading Test set...")
-    test_set = GroundedScanDataset(data_path, data_directory, split="test",
+    test_set = GroundedScanDataset(data_path, data_directory, split="test",  # TODO: use dev set here
                                    input_vocabulary_file=input_vocab_path,
                                    target_vocabulary_file=target_vocab_path, generate_vocabulary=False)
-    test_set.read_dataset(max_examples=kwargs["max_testing_examples"],
+    test_set.read_dataset(max_examples=None,
                           simple_situation_representation=simple_situation_representation)
+
+    # Shuffle the test set to make sure that if we only evaluate max_testing_examples we get a random part of the set.
+    test_set.shuffle_data()
     logger.info("Done Loading Test set.")
 
     model = Model(input_vocabulary_size=training_set.input_vocabulary_size,
@@ -133,7 +137,8 @@ def train(data_path: str, data_directory: str, generate_vocabularies: bool, inpu
                         test_set.get_data_iterator(batch_size=1), model=model,
                         max_decoding_steps=max_decoding_steps, pad_idx=test_set.target_vocabulary.pad_idx,
                         sos_idx=test_set.target_vocabulary.sos_idx,
-                        eos_idx=test_set.target_vocabulary.eos_idx)
+                        eos_idx=test_set.target_vocabulary.eos_idx,
+                        max_examples_to_evaluate=kwargs["max_testing_examples"])
                     logger.info("  Evaluation Accuracy: %5.2f Exact Match: %5.2f "
                                 " Target Accuracy: %5.2f" % (accuracy, exact_match, target_accuracy))
                     if exact_match > best_exact_match:

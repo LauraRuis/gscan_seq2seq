@@ -11,7 +11,7 @@ import numpy as np
 from GroundedScan.dataset import GroundedScan
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+device = torch.device("cpu")
 logger = logging.getLogger(__name__)
 
 
@@ -198,7 +198,7 @@ class GroundedScanDataset(object):
                     torch.zeros(int(to_pad_input), dtype=torch.long, device=device).unsqueeze(0)], dim=1)
                 # padded_input = torch.cat([
                 #     torch.zeros_like(example["input_tensor"], dtype=torch.long, device=device),
-                #     torch.zeros(int(to_pad_input), dtype=torch.long, device=device).unsqueeze(0)], dim=1) # TODO: change back
+                #     torch.zeros(int(to_pad_input), dtype=torch.long, device=devicedevice).unsqueeze(0)], dim=1) # TODO: change back
                 padded_target = torch.cat([
                     example["target_tensor"],
                     torch.zeros(int(to_pad_target), dtype=torch.long, device=device).unsqueeze(0)], dim=1)

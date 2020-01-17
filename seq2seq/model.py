@@ -1,4 +1,3 @@
-# TODO: wrapper model class for input, situation -> output
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,11 +11,12 @@ import shutil
 from seq2seq.cnn_model import ConvolutionalNet
 from seq2seq.cnn_model import DownSamplingConvolutionalNet
 from seq2seq.seq2seq_model import EncoderRNN
+from seq2seq.seq2seq_model import Attention
 from seq2seq.seq2seq_model import LuongAttentionDecoderRNN
 from seq2seq.seq2seq_model import BahdanauAttentionDecoderRNN
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+device = torch.device("cpu")  # TODO: remove
 logger = logging.getLogger(__name__)
 use_cuda = True if torch.cuda.is_available() else False
 
@@ -26,7 +26,7 @@ class Model(nn.Module):
     def __init__(self, input_vocabulary_size: int, embedding_dimension: int, encoder_hidden_size: int,
                  num_encoder_layers: int, target_vocabulary_size: int, encoder_dropout_p: float,
                  encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float,
-                 decoder_hidden_size: int, num_cnn_channels: int, cnn_kernel_size: int,
+                 decoder_hidden_size: int, num_cnn_channels: int,
                  cnn_dropout_p: float, cnn_hidden_num_channels: int, input_padding_idx: int, target_pad_idx: int,
                  target_eos_idx: int, output_directory: str, conditional_attention: bool, auxiliary_task: bool,
                  simple_situation_representation: bool, attention_type: str, **kwargs):
@@ -34,6 +34,8 @@ class Model(nn.Module):
 
         self.simple_situation_representation = simple_situation_representation
         if not simple_situation_representation:
+            logger.warning("DownSamplingConvolutionalNet not correctly implemented. Update or set "
+                           "--simple_situation_representation")
             self.downsample_image = DownSamplingConvolutionalNet(num_channels=num_cnn_channels,
                                                                  num_conv_channels=cnn_hidden_num_channels,
                                                                  dropout_probability=cnn_dropout_p)
@@ -44,8 +46,12 @@ class Model(nn.Module):
         # Output: [batch_size, image_width * image_width, num_conv_channels * 3]
         self.situation_encoder = ConvolutionalNet(num_channels=cnn_input_channels,
                                                   num_conv_channels=cnn_hidden_num_channels,
-                                                  kernel_size=cnn_kernel_size, dropout_probability=cnn_dropout_p)
-        self.situation_to_hidden = nn.Linear(cnn_hidden_num_channels * 3, decoder_hidden_size)
+                                                  dropout_probability=cnn_dropout_p)
+        # Attention over the output features of the ConvolutionalNet.
+        # Input: [bsz, 1, decoder_hidden_size], [bsz, image_width * image_width, cnn_hidden_num_channels * 3]
+        # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_width * image_width]
+        self.visual_attention = Attention(key_size=cnn_hidden_num_channels * 3, query_size=decoder_hidden_size,
+                                          hidden_size=decoder_hidden_size)
 
         self.auxiliary_task = auxiliary_task
         if auxiliary_task:
@@ -59,8 +65,10 @@ class Model(nn.Module):
                                   hidden_size=encoder_hidden_size, num_layers=num_encoder_layers,
                                   dropout_probability=encoder_dropout_p, bidirectional=encoder_bidirectional,
                                   padding_idx=input_padding_idx)
-        self.command_to_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
+        # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it.
         self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
+        self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size,
+                                           hidden_size=decoder_hidden_size)
 
         # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
         # Input for attention: [batch_size, max_input_length, hidden_size],
@@ -72,8 +80,12 @@ class Model(nn.Module):
                                                                  output_size=target_vocabulary_size,
                                                                  num_layers=num_decoder_layers,
                                                                  dropout_probability=decoder_dropout_p,
+                                                                 padding_idx=target_pad_idx,
+                                                                 textual_attention=self.textual_attention,
+                                                                 visual_attention=self.visual_attention,
                                                                  conditional_attention=conditional_attention)
         elif attention_type == "luong":
+            logger.warning("Luong attention not correctly implemented.")
             self.attention_decoder = LuongAttentionDecoderRNN(hidden_size=decoder_hidden_size,
                                                               output_size=target_vocabulary_size,
                                                               num_layers=num_decoder_layers,
@@ -86,8 +98,6 @@ class Model(nn.Module):
         self.target_pad_idx = target_pad_idx
         self.loss_criterion = nn.NLLLoss(ignore_index=target_pad_idx)
         self.tanh = nn.Tanh()
-        self.enc_dropout = nn.Dropout(p=encoder_dropout_p)
-        self.dec_dropout = nn.Dropout(p=decoder_dropout_p)
         self.output_directory = output_directory
         self.trained_iterations = 0
         self.best_iteration = 0
@@ -99,7 +109,8 @@ class Model(nn.Module):
         """Get rid of SOS-tokens in targets batch and append a padding token to each example in the batch."""
         batch_size, max_time = input_tensor.size()
         input_tensor = input_tensor[:, 1:]
-        output_tensor = torch.cat([input_tensor, torch.zeros(batch_size, dtype=torch.long).unsqueeze(dim=1)], dim=1)
+        output_tensor = torch.cat([input_tensor, torch.zeros(batch_size, device=device, dtype=torch.long).unsqueeze(
+            dim=1)], dim=1)
         return output_tensor
 
     def get_metrics(self, target_scores: torch.Tensor, targets: torch.Tensor) -> Tuple[float, float]:
@@ -159,24 +170,18 @@ class Model(nn.Module):
 
     def encode_input(self, commands_input: torch.LongTensor, commands_lengths: List[int],
                      situations_input: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Pass the input commands through an RNN encoder and the situation input through a CNN encoder."""
         if not self.simple_situation_representation:
             situations_input = self.downsample_image(situations_input)
         encoded_image = self.situation_encoder(situations_input)
-        encoded_image = self.tanh(self.situation_to_hidden(encoded_image))
-        # encoded_image = self.enc_dropout(encoded_image)
         hidden, encoder_outputs = self.encoder(commands_input, commands_lengths)
-        encoder_outputs["encoder_outputs"] = self.tanh(self.command_to_hidden(encoder_outputs["encoder_outputs"]))
-        # encoder_outputs["encoder_outputs"] = self.enc_dropout(encoder_outputs["encoder_outputs"])
-        hidden = self.tanh(self.enc_hidden_to_dec_hidden(hidden))
-        # hidden = self.enc_dropout(hidden)
         return {"encoded_situations": encoded_image, "encoded_commands": encoder_outputs, "hidden_states": hidden}
 
-    def decode_input(self, target_token: torch.LongTensor, hidden: torch.Tensor, encoder_outputs: torch.Tensor,
-                     input_lengths: List[int], encoded_situations: torch.Tensor) -> Tuple[torch.Tensor,
-                                                                                          Tuple[torch.Tensor,
-                                                                                                torch.Tensor],
-                                                                                          torch.Tensor, torch.Tensor,
-                                                                                          torch.Tensor]:
+    def decode_input(self, target_token: torch.LongTensor, hidden: Tuple[torch.Tensor, torch.Tensor],
+                     encoder_outputs: torch.Tensor, input_lengths: List[int],
+                     encoded_situations: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor],
+                                                                torch.Tensor, torch.Tensor, torch.Tensor]:
+        """One decoding step based on the previous hidden state of the decoder and the previous target token."""
         return self.attention_decoder.forward_step(input_tokens=target_token, last_hidden=hidden,
                                                    encoded_commands=encoder_outputs, commands_lengths=input_lengths,
                                                    encoded_situations=encoded_situations)
@@ -185,7 +190,9 @@ class Model(nn.Module):
                              initial_hidden: torch.Tensor, encoded_commands: torch.Tensor,
                              command_lengths: List[int], encoded_situations: torch.Tensor) -> Tuple[torch.Tensor,
                                                                                                     torch.Tensor]:
-        initial_hidden = self.attention_decoder.initialize_hidden(initial_hidden)
+        """Decode a batch of input sequences."""
+        initial_hidden = self.attention_decoder.initialize_hidden(
+            self.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
         decoder_output_batched, _, context_situation = self.attention_decoder(input_tokens=target_batch,
                                                                               input_lengths=target_lengths,
                                                                               init_hidden=initial_hidden,

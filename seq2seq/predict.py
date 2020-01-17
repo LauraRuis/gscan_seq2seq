@@ -10,15 +10,14 @@ from seq2seq.helpers import sequence_accuracy
 from seq2seq.gSCAN_dataset import GroundedScanDataset
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+device = torch.device("cpu")
 logger = logging.getLogger(__name__)
 
 
 def predict_and_save(dataset: GroundedScanDataset, model: nn.Module, output_file_path: str, max_decoding_steps: int,
-                     max_testing_examples=None,
-                     **kwargs):
+                     max_testing_examples=None, **kwargs):
     """
-    TODO
+
     :param dataset:
     :param model:
     :param output_file_path:
@@ -58,7 +57,7 @@ def predict_and_save(dataset: GroundedScanDataset, model: nn.Module, output_file
 
 
 def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, pad_idx: int, sos_idx: int,
-            eos_idx: int) -> torch.Tensor:
+            eos_idx: int, max_examples_to_evaluate=None) -> torch.Tensor:
     """
     TODO
     :param data_iterator:
@@ -67,6 +66,7 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
     :param pad_idx:
     :param sos_idx:
     :param eos_idx:
+    :param: max_examples_to_evaluate:
     :return:
     """
     # Disable dropout and other regularization.
@@ -78,15 +78,25 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
     for (input_sequence, input_lengths, derivation_spec, situation, situation_spec, target_sequence,
          target_lengths, agent_positions, target_positions) in data_iterator:
         i += 1
+        if max_examples_to_evaluate:
+            if i > max_examples_to_evaluate:
+                break
         # Encode the input sequence.
         encoded_input = model.encode_input(commands_input=input_sequence,
                                            commands_lengths=input_lengths,
                                            situations_input=situation)
 
+        # For efficiency
+        projected_keys_visual = model.visual_attention.key_layer(
+            encoded_input["encoded_situations"])  # [bsz, situation_length, dec_hidden_dim]
+        projected_keys_textual = model.textual_attention.key_layer(
+            encoded_input["encoded_commands"]["encoder_outputs"])  # [max_input_length, bsz, dec_hidden_dim]
+
         # Iteratively decode the output.
         output_sequence = []
         contexts_situation = []
-        hidden = model.attention_decoder.initialize_hidden(encoded_input["hidden_states"])
+        hidden = model.attention_decoder.initialize_hidden(
+            model.tanh(model.enc_hidden_to_dec_hidden(encoded_input["hidden_states"])))
         token = torch.tensor([sos_idx], dtype=torch.long, device=device)
         decoding_iteration = 0
         attention_weights_commands = []
@@ -94,8 +104,8 @@ def predict(data_iterator: Iterator, model: nn.Module, max_decoding_steps: int, 
         while token != eos_idx and decoding_iteration <= max_decoding_steps:
             (output, hidden, context_situation, attention_weights_command,
              attention_weights_situation) = model.decode_input(
-                target_token=token, hidden=hidden, encoder_outputs=encoded_input["encoded_commands"]["encoder_outputs"],
-                input_lengths=input_lengths, encoded_situations=encoded_input["encoded_situations"])
+                target_token=token, hidden=hidden, encoder_outputs=projected_keys_textual,
+                input_lengths=input_lengths, encoded_situations=projected_keys_visual)
             output = F.log_softmax(output, dim=-1)
             token = output.max(dim=-1)[1]
             output_sequence.append(token.data[0].item())
